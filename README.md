@@ -1,9 +1,13 @@
 # abtagger
 
+[![tests](https://github.com/happyfunpaul/Abtagger/actions/workflows/tests.yml/badge.svg)](https://github.com/happyfunpaul/Abtagger/actions/workflows/tests.yml)
+
 A small, local, spreadsheet-style editor for **audiobook** metadata. Point it at a
 folder and it scans recursively for `.m4b` / `.m4a` / `.mp3` files, shows one row
 per file in an editable grid, and writes the tags **into the audio files
 themselves**. Nothing is renamed or moved unless you ask.
+
+![abtagger grid](screenshots/screenshot.png)
 
 Built because Audiobookshelf (ABS) keeps metadata in sidecar files and never
 touches the audio. abtagger's philosophy is the opposite: the audio files are the
