@@ -63,6 +63,7 @@ td.info{padding:4px 8px;color:var(--dim);white-space:nowrap;font-variant-numeric
   <button id="reload" type="button">Reload</button>
   <button id="undo" type="button" title="Restore the tags overwritten by the previous save">Undo last save</button>
   <button id="settings" type="button" title="Settings">Settings</button>
+  <button id="help" type="button" title="Template help">?</button>
   <button id="absscan" type="button" title="Trigger an Audiobookshelf library scan for this folder">Scan ABS</button>
   <button id="absclean" type="button" title="Remove Audiobookshelf items marked missing for this folder">Clean missing (ABS)</button>
   <button id="save" type="button" class="primary" disabled>Save</button>
@@ -96,13 +97,27 @@ td.info{padding:4px 8px;color:var(--dim);white-space:nowrap;font-variant-numeric
   </div>
 </section>
 <div id="status" role="status" aria-live="polite"></div>
+<div id="helpmodal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:10;align-items:center;justify-content:center">
+  <div style="background:var(--panel);padding:16px;border-radius:8px;max-width:36rem;width:90%;max-height:80vh;overflow:auto;font-size:13px">
+    <h3 style="margin:0 0 8px">Rename template language</h3>
+    <p>Placeholders in <code>{ }</code> are replaced with the tag value. Wrap optional parts in <code>[ ]</code>: a bracket is emitted only if every placeholder inside it is non-empty.</p>
+    <p><strong>Fields:</strong> {title}, {album}, {author}, {author_first}, {author_last}, {narrator}, {series}, {series_num}, {year}, {genre}, {filename}, {stem}, {ext}</p>
+    <p><strong>Examples:</strong></p>
+    <pre style="background:var(--bg);padding:8px;border-radius:4px;overflow:auto">{author_last}, {author_first}/[{series}/][{series_num} - ]{title}</pre>
+    <p>Standalone book (no series) becomes <code>James, Aaron/Assholes.m4b</code>; a series book becomes <code>James, Aaron/Stormlight Archive/1 - The Way of Kings.m4b</code>.</p>
+    <pre style="background:var(--bg);padding:8px;border-radius:4px;overflow:auto">{author_last}, {author_first}/[{series}/][{series_num} - ]{title}/{title}</pre>
+    <p>Adds a folder per book (last component is the filename).</p>
+    <p>Use <code>/</code> to create folders. Illegal filename characters are sanitized.</p>
+    <div style="display:flex;justify-content:flex-end"><button id="h_close" type="button">Close</button></div>
+  </div>
+</div>
 <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:10;align-items:center;justify-content:center">
   <div style="background:var(--panel);padding:16px;border-radius:8px;max-width:32rem;width:90%;max-height:80vh;overflow:auto">
     <h3 style="margin:0 0 8px">Settings</h3>
     <label>ABS URL<br><input id="s_abs_url" type="text" style="width:100%"></label><br><br>
     <label>ABS token<br><input id="s_abs_token" type="text" style="width:100%"></label><br><br>
     <label>ABS library id (optional)<br><input id="s_abs_lib" type="text" style="width:100%"></label><br><br>
-    <label>Rename template<br><input id="s_template" type="text" style="width:100%"></label><br><br>
+    <label>Rename template (see ? for fields)<br><input id="s_template" type="text" style="width:100%"></label><br><br>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button id="s_cancel" type="button">Cancel</button>
       <button id="s_save" type="button" class="primary">Save</button>
@@ -634,6 +649,8 @@ buildHead();
 wireTable();
 wireBulk();
 $("settings").onclick = () => { $("modal").style.display = "flex"; };
+$("help").onclick = () => { $("helpmodal").style.display = "flex"; };
+$("h_close").onclick = () => { $("helpmodal").style.display = "none"; };
 $("s_cancel").onclick = () => { $("modal").style.display = "none"; };
 $("s_save").onclick = async () => {
   setBusy(true);
