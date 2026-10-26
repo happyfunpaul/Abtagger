@@ -70,10 +70,10 @@ class TestRoundTrip(unittest.TestCase):
         self.root.mkdir()
         # copy sample audio files from testdata if present
         src = Path(__file__).resolve().parents[1] / "testdata"
-        self.has_mp3 = (src / "ding.mp3").is_file()
+        self.has_mp3 = (src / "Gift_of_the_Magi.mp3").is_file()
         self.has_m4a = (src / "ding.m4a").is_file()
         if self.has_mp3:
-            shutil.copy(src / "ding.mp3", self.root / "book.mp3")
+            shutil.copy(src / "Gift_of_the_Magi.mp3", self.root / "book.mp3")
         if self.has_m4a:
             shutil.copy(src / "ding.m4a", self.root / "book.m4a")
 
