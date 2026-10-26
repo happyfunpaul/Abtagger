@@ -14,9 +14,11 @@ import argparse
 import hmac
 import json
 import os
+import re
 import secrets
 from abs_client import AbsClient, load_config
 from rename import build_rename_plan, resolve_collisions
+import settings as settings_mod
 import sys
 import threading
 import time
@@ -82,6 +84,58 @@ def do_abs_scan() -> dict:
         raise ValueError("could not match this folder to an ABS library; set abs_library_ids in config")
     res = client.scan_library(lib_id)
     return {"library_id": lib_id, "result": res}
+
+
+def do_settings_get() -> dict:
+    return settings_mod.load()
+
+
+def do_settings_save(data) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError("bad request")
+    settings_mod.save(data)
+    return settings_mod.load()
+
+
+def _clean_title_from_filename(name: str, author: str) -> str:
+    stem = os.path.splitext(name)[0]
+    # remove leading author if present
+    a = (author or "").strip()
+    if a and stem.lower().startswith(a.lower()):
+        stem = stem[len(a):]
+    # remove separators
+    stem = stem.lstrip(" -_")
+    # remove common suffixes
+    stem = re.sub(r"\s*\((un)?abridged\)\s*$", "", stem, flags=re.I)
+    # underscores -> spaces
+    stem = stem.replace("_", " ")
+    stem = re.sub(r"\s+", " ", stem).strip(" -_")
+    return stem
+
+
+def do_title_from_filename(selected: list[str] | None = None) -> dict:
+    st = _state()
+    if st.read_only:
+        raise ValueError("server was started with --read-only")
+    rows = scan(st.root)
+    sel_set = set(selected) if selected else {r["path"] for r in rows if not r.get("error")}
+    results = []
+    with st.lock:
+        for r in rows:
+            if r.get("error") or r["path"] not in sel_set:
+                continue
+            new_title = _clean_title_from_filename(r.get("name", r["path"]), r.get("author", ""))
+            if not new_title:
+                results.append({"path": r["path"], "ok": False, "error": "could not derive title"})
+                continue
+            # build a change item and apply
+            try:
+                item = {"path": r["path"], "changes": {"title": {"old": r.get("title", ""), "new": new_title}}}
+                rec, entry = apply_changes(item)
+                results.append({"path": r["path"], "ok": True, "row": rec, "title": new_title})
+            except (ValueError, OSError) as e:
+                results.append({"path": r["path"], "ok": False, "error": str(e)})
+    return {"results": results}
 
 
 def do_abs_clean_missing() -> dict:
@@ -220,6 +274,10 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/api/settings":
+            if not self._authed():
+                return
+            self._json(200, do_settings_get())
         elif path == "/api/scan":
             if not self._authed():
                 return
@@ -241,7 +299,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         p = self.path.split("?", 1)[0]
         if p not in ("/api/save", "/api/undo", "/api/delete", "/api/abs/scan", "/api/abs/clean-missing",
-                     "/api/rename/plan", "/api/rename/apply"):
+                     "/api/rename/plan", "/api/rename/apply", "/api/settings", "/api/title-from-filename"):
             self._json(404, {"error": "not found"})
             return
         st = self._state()
@@ -277,6 +335,12 @@ class Handler(BaseHTTPRequestHandler):
                 out = do_abs_scan()
             elif p == "/api/abs/clean-missing":
                 out = do_abs_clean_missing()
+            elif p == "/api/settings":
+                out = do_settings_save(body if isinstance(body, dict) else {})
+            elif p == "/api/title-from-filename":
+                if st.read_only:
+                    raise ValueError("server was started with --read-only")
+                out = do_title_from_filename(body.get("selected") if isinstance(body, dict) else None)
             else:
                 raise ValueError("not found")
             self._json(200, out)

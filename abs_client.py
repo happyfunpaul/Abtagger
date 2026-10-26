@@ -19,20 +19,12 @@ class AbsConfig:
 
 
 def load_config() -> AbsConfig:
+    from settings import load as load_settings
+    s = load_settings()
     cfg = AbsConfig()
-    # env overrides
-    cfg.url = os.environ.get("ABTAGGER_ABS_URL", cfg.url)
-    cfg.token = os.environ.get("ABTAGGER_ABS_TOKEN", cfg.token)
-    # config file
-    path = Path.home() / ".abtagger" / "config.json"
-    if path.is_file():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            cfg.url = data.get("abs_url", cfg.url) or cfg.url
-            cfg.token = data.get("abs_token", cfg.token) or cfg.token
-            cfg.library_ids = data.get("abs_library_ids", cfg.library_ids) or cfg.library_ids
-        except (OSError, json.JSONDecodeError):
-            pass
+    cfg.url = os.environ.get("ABTAGGER_ABS_URL", s.get("abs_url", "")) or ""
+    cfg.token = os.environ.get("ABTAGGER_ABS_TOKEN", s.get("abs_token", "")) or ""
+    cfg.library_ids = s.get("abs_library_ids", []) or []
     return cfg
 
 

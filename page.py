@@ -62,6 +62,7 @@ td.info{padding:4px 8px;color:var(--dim);white-space:nowrap;font-variant-numeric
   <input id="filter" type="search" placeholder="Filter rows..." aria-label="Filter rows" autocomplete="off">
   <button id="reload" type="button">Reload</button>
   <button id="undo" type="button" title="Restore the tags overwritten by the previous save">Undo last save</button>
+  <button id="settings" type="button" title="Settings">Settings</button>
   <button id="absscan" type="button" title="Trigger an Audiobookshelf library scan for this folder">Scan ABS</button>
   <button id="absclean" type="button" title="Remove Audiobookshelf items marked missing for this folder">Clean missing (ABS)</button>
   <button id="save" type="button" class="primary" disabled>Save</button>
@@ -91,9 +92,23 @@ td.info{padding:4px 8px;color:var(--dim);white-space:nowrap;font-variant-numeric
     <button id="brevall" type="button">Revert all</button>
     <button id="bdelete" type="button" style="color:var(--bad)">Delete selected</button>
     <button id="brename" type="button">Rename selected</button>
+    <button id="btitlefn" type="button">Title from filename</button>
   </div>
 </section>
 <div id="status" role="status" aria-live="polite"></div>
+<div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:10;align-items:center;justify-content:center">
+  <div style="background:var(--panel);padding:16px;border-radius:8px;max-width:32rem;width:90%;max-height:80vh;overflow:auto">
+    <h3 style="margin:0 0 8px">Settings</h3>
+    <label>ABS URL<br><input id="s_abs_url" type="text" style="width:100%"></label><br><br>
+    <label>ABS token<br><input id="s_abs_token" type="text" style="width:100%"></label><br><br>
+    <label>ABS library id (optional)<br><input id="s_abs_lib" type="text" style="width:100%"></label><br><br>
+    <label>Rename template<br><input id="s_template" type="text" style="width:100%"></label><br><br>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button id="s_cancel" type="button">Cancel</button>
+      <button id="s_save" type="button" class="primary">Save</button>
+    </div>
+  </div>
+</div>
 <div class="wrap">
 <table id="grid">
   <thead><tr id="head"></tr></thead>
@@ -302,7 +317,7 @@ function updateCounts() {
   save.disabled = S.busy || S.readOnly || !dirty.length || bad.length > 0;
   save.title = bad.length ? "Fix the highlighted invalid cells first" : (nfields + " changed value" + (nfields === 1 ? "" : "s"));
   $("undo").disabled = S.busy || S.readOnly;
-  $("bset").disabled = $("breplace").disabled = $("bcopy").disabled = $("brevsel").disabled = $("bdelete").disabled = $("brename").disabled = S.readOnly || sel === 0;
+  $("bset").disabled = $("breplace").disabled = $("bcopy").disabled = $("brevsel").disabled = $("bdelete").disabled = $("brename").disabled = $("btitlefn").disabled = S.readOnly || sel === 0;
   $("brevall").disabled = S.readOnly || dirty.length === 0;
   const parts = [S.vis.length + (S.vis.length === S.rows.length ? "" : " of " + S.rows.length) + " files"];
   if (sel) parts.push(sel + " selected");
@@ -472,12 +487,28 @@ function wireBulk() {
     } catch (e) { status("Delete failed: " + (e.message || e), "bad"); }
     finally { setBusy(false); }
   };
-  $("brename").onclick = async () => {
+  $("btitlefn").onclick = async () => {
     const ts = targets();
     if (!ts.length) { status("Select some rows first.", ""); return; }
-    const tmpl = prompt("Rename template (use {field}, [...] optional groups):",
-      "{author_last}, {author_first}/[{series}/][{series_num} - ]{title}");
-    if (tmpl === null) return;
+    if (!confirm("Derive title from filename for " + ts.length + " selected file(s)?")) return;
+    setBusy(true);
+    try {
+      const res = await api("/api/title-from-filename", {selected: ts.map(r => r.rec.path)});
+      const bad = res.results.filter(x => !x.ok).length;
+      await load();
+      status("Derived titles for " + (res.results.length - bad) + " file(s)." + (bad ? (" " + bad + " failed.") : ""), bad ? "bad" : "good");
+    } catch (e) { status("Failed: " + (e.message || e), "bad"); }
+    finally { setBusy(false); }
+  };
+  $("brename").onclick = async (ev) => {
+    const ts = targets();
+    if (!ts.length) { status("Select some rows first.", ""); return; }
+    let tmpl = (S.template || "");
+    if (ev.shiftKey || !tmpl) {
+      const p = prompt("Rename template (use {field}, [...] optional groups):", tmpl || "{author_last}, {author_first}/[{series}/][{series_num} - ]{title}");
+      if (p === null) return;
+      tmpl = p;
+    }
     setBusy(true);
     try {
       const res = await api("/api/rename/plan", {template: tmpl, selected: ts.map(r => r.rec.path)});
@@ -511,6 +542,14 @@ async function load() {
     S.readOnly = !!data.read_only;
      $("absscan").disabled = !data.abs_configured;
      $("absclean").disabled = !data.abs_configured;
+     try {
+       const s = await api("/api/settings");
+       $("s_abs_url").value = s.abs_url || "";
+       $("s_abs_token").value = s.abs_token || "";
+       $("s_abs_lib").value = (s.abs_library_ids || []).join(",");
+       $("s_template").value = s.rename_template || "";
+       S.template = s.rename_template || "";
+     } catch (e) { /* ignore */ }
     $("root").textContent = data.root;
     $("root").title = data.root;
     S.rows = data.rows.map(mkRow);
@@ -594,6 +633,25 @@ async function undo() {
 buildHead();
 wireTable();
 wireBulk();
+$("settings").onclick = () => { $("modal").style.display = "flex"; };
+$("s_cancel").onclick = () => { $("modal").style.display = "none"; };
+$("s_save").onclick = async () => {
+  setBusy(true);
+  try {
+    const payload = {
+      abs_url: $("s_abs_url").value.trim(),
+      abs_token: $("s_abs_token").value.trim(),
+      abs_library_ids: $("s_abs_lib").value.split(",").map(s => s.trim()).filter(Boolean),
+      rename_template: $("s_template").value.trim()
+    };
+    const s = await api("/api/settings", payload);
+    S.template = s.rename_template || "";
+    $("modal").style.display = "none";
+    await load();
+    status("Settings saved.", "good");
+  } catch (e) { status("Settings save failed: " + (e.message || e), "bad"); }
+  finally { setBusy(false); }
+};
 let ft = null;
 $("filter").addEventListener("input", (e) => {
   clearTimeout(ft);
