@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import secrets
+from abs_client import AbsClient, load_config
 import sys
 import threading
 import time
@@ -44,6 +45,42 @@ from state import apply_changes, save_undo  # noqa: F401
 
 MAX_BODY = 8 * 1024 * 1024
 MAX_ITEMS = 5000
+
+
+def do_delete(items) -> dict:
+    st = _state()
+    if st.read_only:
+        raise ValueError("server was started with --read-only")
+    if not isinstance(items, list) or not items or len(items) > MAX_ITEMS:
+        raise ValueError("bad request")
+    results = []
+    with st.lock:
+        for it in items:
+            rel = it.get("path") if isinstance(it, dict) else None
+            try:
+                path = locate(st.root, rel)
+                path.unlink()
+                results.append({"path": rel, "ok": True})
+            except (ValueError, OSError) as e:
+                results.append({"path": rel, "ok": False, "error": str(e)})
+    return {"results": results}
+
+
+def do_abs_scan() -> dict:
+    st = _state()
+    client = st.abs_client
+    if client is None:
+        raise ValueError("ABS is not configured (set --abs-url/--abs-token or ~/.abtagger/config.json)")
+    lib_id = None
+    # prefer configured library ids
+    if client.cfg.library_ids:
+        lib_id = client.cfg.library_ids[0]
+    else:
+        lib_id = client.find_library_for_root(st.root)
+    if not lib_id:
+        raise ValueError("could not match this folder to an ABS library; set abs_library_ids in config")
+    res = client.scan_library(lib_id)
+    return {"library_id": lib_id, "result": res}
 
 # alias module-level STATE for compatibility
 STATE = None
@@ -115,20 +152,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.log_error("scan failed: %r", e)
                 self._json(500, {"error": "scan failed: " + str(e)})
                 return
-            self._json(200, {"root": str(st.root), "rows": rows, "read_only": st.read_only})
+            self._json(200, {"root": str(st.root), "rows": rows, "read_only": st.read_only,
+                            "abs_configured": st.abs_client is not None})
         else:
             self._json(404, {"error": "not found"})
 
     def do_POST(self):
         if not self._guard() or not self._authed():
             return
-        if self.path.split("?", 1)[0] not in ("/api/save", "/api/undo"):
+        p = self.path.split("?", 1)[0]
+        if p not in ("/api/save", "/api/undo", "/api/delete", "/api/abs/scan"):
             self._json(404, {"error": "not found"})
             return
         st = self._state()
-        if st.read_only:
-            self._json(403, {"error": "server was started with --read-only"})
-            return
         try:
             n = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -138,10 +174,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
-            if self.path.startswith("/api/save"):
+            if p == "/api/save":
+                if st.read_only:
+                    raise ValueError("server was started with --read-only")
                 out = do_save(body.get("items") if isinstance(body, dict) else None)
-            else:
+            elif p == "/api/undo":
+                if st.read_only:
+                    raise ValueError("server was started with --read-only")
                 out = do_undo()
+            elif p == "/api/delete":
+                if st.read_only:
+                    raise ValueError("server was started with --read-only")
+                out = do_delete(body.get("items") if isinstance(body, dict) else None)
+            else:
+                out = do_abs_scan()
             self._json(200, out)
         except (ValueError, json.JSONDecodeError) as e:
             self._json(400, {"error": str(e)})
@@ -163,14 +209,25 @@ def main() -> None:
                     help="where undo logs are kept (default ~/.abtagger)")
     ap.add_argument("--read-only", action="store_true", help="browse only; refuse all writes")
     ap.add_argument("--open", action="store_true", help="open the page in your browser")
+    ap.add_argument("--abs-url", help="Audiobookshelf base URL, e.g. http://localhost:13378")
+    ap.add_argument("--abs-token", help="Audiobookshelf API token")
+    ap.add_argument("--abs-library", help="ABS library id to scan (optional; auto-detected from root)")
     args = ap.parse_args()
 
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
         sys.exit(f"not a folder: {root}")
     token = args.token or secrets.token_urlsafe(18)
+    cfg = load_config()
+    if args.abs_url:
+        cfg.url = args.abs_url
+    if args.abs_token:
+        cfg.token = args.abs_token
+    if args.abs_library:
+        cfg.library_ids = [args.abs_library]
+    abs_client = AbsClient(cfg) if (cfg.url and cfg.token) else None
     st = State(root, token, Path(args.state_dir).expanduser(), args.read_only,
-               loopback=args.host in ("127.0.0.1", "localhost"))
+               loopback=args.host in ("127.0.0.1", "localhost"), abs_client=abs_client)
     _set_state(st)
     try:
         httpd = ThreadingHTTPServer((args.host, args.port), Handler)

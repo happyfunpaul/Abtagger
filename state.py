@@ -17,9 +17,11 @@ MAX_ITEMS = 5000
 
 
 class State:
-    def __init__(self, root: Path, token: str, state_dir: Path, read_only: bool, loopback: bool):
+    def __init__(self, root: Path, token: str, state_dir: Path, read_only: bool, loopback: bool,
+                 abs_client=None):
         self.root, self.token, self.state_dir = root, token, state_dir
         self.read_only, self.loopback = read_only, loopback
+        self.abs_client = abs_client
         self.lock = threading.Lock()
 
 

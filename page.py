@@ -62,6 +62,7 @@ td.info{padding:4px 8px;color:var(--dim);white-space:nowrap;font-variant-numeric
   <input id="filter" type="search" placeholder="Filter rows..." aria-label="Filter rows" autocomplete="off">
   <button id="reload" type="button">Reload</button>
   <button id="undo" type="button" title="Restore the tags overwritten by the previous save">Undo last save</button>
+  <button id="absscan" type="button" title="Trigger an Audiobookshelf library scan for this folder">Scan ABS</button>
   <button id="save" type="button" class="primary" disabled>Save</button>
 </header>
 <section class="bulk" aria-label="Bulk edit selected rows">
@@ -87,6 +88,7 @@ td.info{padding:4px 8px;color:var(--dim);white-space:nowrap;font-variant-numeric
   <div class="grp">
     <button id="brevsel" type="button">Revert selected</button>
     <button id="brevall" type="button">Revert all</button>
+    <button id="bdelete" type="button" style="color:var(--bad)">Delete selected</button>
   </div>
 </section>
 <div id="status" role="status" aria-live="polite"></div>
@@ -298,7 +300,7 @@ function updateCounts() {
   save.disabled = S.busy || S.readOnly || !dirty.length || bad.length > 0;
   save.title = bad.length ? "Fix the highlighted invalid cells first" : (nfields + " changed value" + (nfields === 1 ? "" : "s"));
   $("undo").disabled = S.busy || S.readOnly;
-  $("bset").disabled = $("breplace").disabled = $("bcopy").disabled = $("brevsel").disabled = S.readOnly || sel === 0;
+  $("bset").disabled = $("breplace").disabled = $("bcopy").disabled = $("brevsel").disabled = $("bdelete").disabled = S.readOnly || sel === 0;
   $("brevall").disabled = S.readOnly || dirty.length === 0;
   const parts = [S.vis.length + (S.vis.length === S.rows.length ? "" : " of " + S.rows.length) + " files"];
   if (sel) parts.push(sel + " selected");
@@ -455,6 +457,19 @@ function wireBulk() {
   $("brevall").onclick = () => {
     if (confirm("Discard all unsaved changes?")) { revert(S.rows); status("Reverted all unsaved changes.", ""); }
   };
+  $("bdelete").onclick = async () => {
+    const ts = targets();
+    if (!ts.length) { status("Select some rows first.", ""); return; }
+    if (!confirm("Permanently delete " + ts.length + " file(s) from disk? This cannot be undone.")) return;
+    setBusy(true);
+    try {
+      const res = await api("/api/delete", {items: ts.map(r => ({path: r.rec.path}))});
+      const bad = res.results.filter(x => !x.ok).length;
+      await load();
+      status("Deleted " + (ts.length - bad) + " file(s)." + (bad ? (" " + bad + " failed.") : ""), bad ? "bad" : "good");
+    } catch (e) { status("Delete failed: " + (e.message || e), "bad"); }
+    finally { setBusy(false); }
+  };
 }
 
 /* ---------- load / save / undo ---------- */
@@ -472,6 +487,7 @@ async function load() {
   try {
     const data = await api("/api/scan");
     S.readOnly = !!data.read_only;
+     $("absscan").disabled = !data.abs_configured;
     $("root").textContent = data.root;
     $("root").title = data.root;
     S.rows = data.rows.map(mkRow);
@@ -562,6 +578,15 @@ $("filter").addEventListener("input", (e) => {
 });
 $("save").onclick = save;
 $("undo").onclick = undo;
+$("absscan").onclick = async () => {
+  if (!confirm("Trigger an Audiobookshelf library scan for this folder?")) return;
+  setBusy(true);
+  try {
+    const res = await api("/api/abs/scan", {});
+    status("ABS scan triggered for library " + res.library_id + ".", "good");
+  } catch (e) { status("ABS scan failed: " + (e.message || e), "bad"); }
+  finally { setBusy(false); }
+};
 $("reload").onclick = () => { if (!anyDirty() || confirm("Discard unsaved changes and rescan?")) load(); };
 window.addEventListener("beforeunload", (e) => { if (anyDirty()) { e.preventDefault(); e.returnValue = ""; } });
 load();
