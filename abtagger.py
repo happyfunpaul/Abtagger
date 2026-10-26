@@ -16,6 +16,7 @@ import json
 import os
 import secrets
 from abs_client import AbsClient, load_config
+from rename import build_rename_plan, resolve_collisions
 import sys
 import threading
 import time
@@ -81,6 +82,84 @@ def do_abs_scan() -> dict:
         raise ValueError("could not match this folder to an ABS library; set abs_library_ids in config")
     res = client.scan_library(lib_id)
     return {"library_id": lib_id, "result": res}
+
+
+def do_abs_clean_missing() -> dict:
+    st = _state()
+    client = st.abs_client
+    if client is None:
+        raise ValueError("ABS is not configured")
+    lib_id = client.cfg.library_ids[0] if client.cfg.library_ids else client.find_library_for_root(st.root)
+    if not lib_id:
+        raise ValueError("could not match this folder to an ABS library")
+    res = client.clean_missing_items(lib_id)
+    return {"library_id": lib_id, "result": res}
+
+
+def do_rename_plan(template: str, selected: list[str] | None = None) -> dict:
+    st = _state()
+    sel_set = set(selected) if selected else None
+    rows = scan(st.root)
+    plans = build_rename_plan(st.root, rows, template, selected=sel_set, group_books=True)
+    plans = resolve_collisions(plans, st.root)
+    return {"items": [{"src": p.src, "dst": p.dst} for p in plans]}
+
+
+def do_rename_apply(items) -> dict:
+    st = _state()
+    if st.read_only:
+        raise ValueError("server was started with --read-only")
+    if not isinstance(items, list) or not items:
+        raise ValueError("bad request")
+    results = []
+    moved_srcs = []
+    with st.lock:
+        for it in items:
+            src_rel = it.get("src")
+            dst_rel = it.get("dst")
+            try:
+                src = locate(st.root, src_rel)
+                # validate dst path safety
+                if not isinstance(dst_rel, str) or not dst_rel:
+                    raise ValueError("bad destination")
+                parts = dst_rel.replace("\\", "/").split("/")
+                if any(p in ("", ".", "..") for p in parts):
+                    raise ValueError("bad destination")
+                dst = st.root.joinpath(*parts)
+                if dst.resolve().relative_to(st.root) is None:
+                    pass
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                # refuse overwrite
+                if dst.exists():
+                    raise ValueError("destination already exists")
+                os.replace(str(src), str(dst))
+                moved_srcs.append(src_rel)
+                results.append({"src": src_rel, "dst": dst_rel, "ok": True})
+            except (ValueError, OSError) as e:
+                results.append({"src": src_rel, "dst": dst_rel, "ok": False, "error": str(e)})
+        # clean empty source dirs
+        for src_rel in moved_srcs:
+            try:
+                parent = st.root.joinpath(*src_rel.replace("\\", "/").split("/")[:-1])
+                # remove empty dirs up to root
+                cur = parent
+                while cur != st.root and cur.is_dir():
+                    try:
+                        cur.rmdir()  # only succeeds if empty
+                    except OSError:
+                        break
+                    cur = cur.parent
+            except OSError:
+                pass
+    # trigger ABS scan if configured (rename is explicit, so auto-scan is ok)
+    if st.abs_client is not None:
+        try:
+            lib_id = st.abs_client.cfg.library_ids[0] if st.abs_client.cfg.library_ids else st.abs_client.find_library_for_root(st.root)
+            if lib_id:
+                st.abs_client.scan_library(lib_id)
+        except Exception:
+            pass
+    return {"results": results}
 
 # alias module-level STATE for compatibility
 STATE = None
@@ -161,7 +240,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._guard() or not self._authed():
             return
         p = self.path.split("?", 1)[0]
-        if p not in ("/api/save", "/api/undo", "/api/delete", "/api/abs/scan"):
+        if p not in ("/api/save", "/api/undo", "/api/delete", "/api/abs/scan", "/api/abs/clean-missing",
+                     "/api/rename/plan", "/api/rename/apply"):
             self._json(404, {"error": "not found"})
             return
         st = self._state()
@@ -186,8 +266,19 @@ class Handler(BaseHTTPRequestHandler):
                 if st.read_only:
                     raise ValueError("server was started with --read-only")
                 out = do_delete(body.get("items") if isinstance(body, dict) else None)
-            else:
+            elif p == "/api/rename/plan":
+                out = do_rename_plan(body.get("template", "") if isinstance(body, dict) else "",
+                                     body.get("selected") if isinstance(body, dict) else None)
+            elif p == "/api/rename/apply":
+                if st.read_only:
+                    raise ValueError("server was started with --read-only")
+                out = do_rename_apply(body.get("items") if isinstance(body, dict) else None)
+            elif p == "/api/abs/scan":
                 out = do_abs_scan()
+            elif p == "/api/abs/clean-missing":
+                out = do_abs_clean_missing()
+            else:
+                raise ValueError("not found")
             self._json(200, out)
         except (ValueError, json.JSONDecodeError) as e:
             self._json(400, {"error": str(e)})

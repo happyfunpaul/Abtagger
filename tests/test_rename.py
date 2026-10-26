@@ -42,6 +42,16 @@ class TestRenderTemplate(unittest.TestCase):
     def test_builtin_list(self):
         self.assertTrue(len(rename.BUILTIN_TEMPLATES) >= 4)
 
+    def test_group_rename(self):
+        rows = [
+            {"path": "a.m4a", "name": "a.m4a", "title": "Foo", "author": "Bar", "series": "", "series_num": "", "duration": 100, "error": ""},
+            {"path": "b.m4a", "name": "b.m4a", "title": "Foo", "author": "Bar", "series": "", "series_num": "", "duration": 100, "error": ""},
+        ]
+        plans = rename.build_rename_plan(__import__("pathlib").Path("/tmp"), rows, "{title}", selected={"a.m4a"}, group_books=True)
+        self.assertEqual(len(plans), 2)
+        dsts = sorted(p.dst for p in plans)
+        self.assertTrue(all("Foo" in d for d in dsts))
+
 
 class TestNormalizeTitle(unittest.TestCase):
     def test_suffix(self):

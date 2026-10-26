@@ -19,7 +19,7 @@ def _slug_component(s: str) -> str:
         s = s.replace(ch, " ")
     # collapse whitespace
     s = re.sub(r"\s+", " ", s).strip(" .")
-    if not s:
+    if not s or not re.search(r"[A-Za-z0-9]", s):
         return ""
     # Windows reserved names
     stem = s.split(".")[0].upper()
@@ -166,20 +166,104 @@ class RenamePlan:
     is_dir_move: bool = False
 
 
-def build_rename_plan(root: Path, rows: list[dict[str, Any]], template: str,
-                      selected: set[str] | None = None) -> list[RenamePlan]:
-    plans = []
+def book_key(r: dict[str, Any]) -> tuple[str, str, str, str]:
+    parent = r["path"].rsplit("/", 1)[0] if "/" in r["path"] else ""
+    return (parent, rename_normalize_title(r.get("title", "")),
+            normalize_author(r.get("author", "")),
+            normalize_title(r.get("series", "")))
+
+
+def rename_normalize_title(t: str) -> str:
+    return normalize_title(t)
+
+
+def group_rows(rows: list[dict[str, Any]]) -> dict[tuple, list[dict[str, Any]]]:
+    groups: dict[tuple, list[dict[str, Any]]] = {}
     for r in rows:
         if r.get("error"):
             continue
-        if selected is not None and r.get("path") not in selected:
+        groups.setdefault(book_key(r), []).append(r)
+    return groups
+
+
+def _part_suffix(original: str, index: int, total: int) -> str:
+    # try to extract a trailing number from the original stem
+    stem = os.path.splitext(original)[0]
+    m = re.search(r"(\d+)\s*$", stem)
+    if m and total > 1:
+        return m.group(1)
+    if total > 1:
+        return str(index)
+    return ""
+
+
+def build_rename_plan(root: Path, rows: list[dict[str, Any]], template: str,
+                      selected: set[str] | None = None, group_books: bool = True) -> list[RenamePlan]:
+    groups = group_rows(rows)
+    # determine which book groups are touched
+    touched_groups: set[tuple] = set()
+    selected_paths = selected if selected is not None else {r["path"] for r in rows if not r.get("error")}
+    for r in rows:
+        if r.get("error") or r["path"] not in selected_paths:
             continue
-        original = r.get("name") or r["path"].rsplit("/", 1)[-1]
-        dst_rel = render_template(template, r, original)
-        if not dst_rel or dst_rel == r["path"]:
-            continue
-        # ensure extension preserved if template omitted ext
-        if "." not in dst_rel.rsplit("/", 1)[-1] and "." in original:
-            dst_rel = dst_rel + os.path.splitext(original)[1]
-        plans.append(RenamePlan(src=r["path"], dst=dst_rel))
+        touched_groups.add(book_key(r))
+
+    plans: list[RenamePlan] = []
+    seen_src: set[str] = set()
+    for gk in touched_groups:
+        grp = sorted(groups.get(gk, []), key=lambda r: r["path"])
+        # if grouping disabled, treat each file independently
+        if not group_books or len(grp) == 1:
+            grp = [r for r in grp if r["path"] in selected_paths]
+        else:
+            # include all siblings of the selected files in this group
+            grp = [r for r in grp if r["path"] in selected_paths or True]
+            # but only if at least one selected
+            if not any(r["path"] in selected_paths for r in grp):
+                continue
+        total = len(grp)
+        for idx, r in enumerate(grp, start=1):
+            if r["path"] in seen_src:
+                continue
+            seen_src.add(r["path"])
+            original = r.get("name") or r["path"].rsplit("/", 1)[-1]
+            dst_rel = render_template(template, r, original)
+            if not dst_rel or dst_rel == r["path"]:
+                continue
+            # ensure extension preserved if template omitted ext
+            last = dst_rel.rsplit("/", 1)[-1]
+            if "." not in last and "." in original:
+                dst_rel = dst_rel + os.path.splitext(original)[1]
+            # multi-file: ensure unique filename by appending part suffix if needed
+            if total > 1:
+                # insert part number before extension if not already present
+                if "/" in dst_rel:
+                    folder, fname = dst_rel.rsplit("/", 1)
+                else:
+                    folder, fname = "", dst_rel
+                stem, ext = os.path.splitext(fname)
+                part = _part_suffix(original, idx, total)
+                if part and part not in stem:
+                    fname = f"{stem} - {part}{ext}"
+                dst_rel = f"{folder}/{fname}" if folder else fname
+            plans.append(RenamePlan(src=r["path"], dst=dst_rel))
     return plans
+
+
+def resolve_collisions(plans: list[RenamePlan], root: Path) -> list[RenamePlan]:
+    seen: set[str] = set()
+    out: list[RenamePlan] = []
+    for pl in plans:
+        dst = pl.dst
+        # avoid collisions with other planned dsts and existing files
+        base_folder, fname = (dst.rsplit("/", 1) + [""])[:2] if "/" in dst else ("", dst)
+        stem, ext = os.path.splitext(fname)
+        counter = 1
+        candidate = dst
+        while candidate in seen or (root / candidate).exists():
+            counter += 1
+            new_fname = f"{stem} ({counter}){ext}"
+            candidate = f"{base_folder}/{new_fname}" if base_folder else new_fname
+        seen.add(candidate)
+        out.append(RenamePlan(src=pl.src, dst=candidate, is_dir_move=pl.is_dir_move))
+    return out

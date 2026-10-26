@@ -63,6 +63,7 @@ td.info{padding:4px 8px;color:var(--dim);white-space:nowrap;font-variant-numeric
   <button id="reload" type="button">Reload</button>
   <button id="undo" type="button" title="Restore the tags overwritten by the previous save">Undo last save</button>
   <button id="absscan" type="button" title="Trigger an Audiobookshelf library scan for this folder">Scan ABS</button>
+  <button id="absclean" type="button" title="Remove Audiobookshelf items marked missing for this folder">Clean missing (ABS)</button>
   <button id="save" type="button" class="primary" disabled>Save</button>
 </header>
 <section class="bulk" aria-label="Bulk edit selected rows">
@@ -89,6 +90,7 @@ td.info{padding:4px 8px;color:var(--dim);white-space:nowrap;font-variant-numeric
     <button id="brevsel" type="button">Revert selected</button>
     <button id="brevall" type="button">Revert all</button>
     <button id="bdelete" type="button" style="color:var(--bad)">Delete selected</button>
+    <button id="brename" type="button">Rename selected</button>
   </div>
 </section>
 <div id="status" role="status" aria-live="polite"></div>
@@ -300,7 +302,7 @@ function updateCounts() {
   save.disabled = S.busy || S.readOnly || !dirty.length || bad.length > 0;
   save.title = bad.length ? "Fix the highlighted invalid cells first" : (nfields + " changed value" + (nfields === 1 ? "" : "s"));
   $("undo").disabled = S.busy || S.readOnly;
-  $("bset").disabled = $("breplace").disabled = $("bcopy").disabled = $("brevsel").disabled = $("bdelete").disabled = S.readOnly || sel === 0;
+  $("bset").disabled = $("breplace").disabled = $("bcopy").disabled = $("brevsel").disabled = $("bdelete").disabled = $("brename").disabled = S.readOnly || sel === 0;
   $("brevall").disabled = S.readOnly || dirty.length === 0;
   const parts = [S.vis.length + (S.vis.length === S.rows.length ? "" : " of " + S.rows.length) + " files"];
   if (sel) parts.push(sel + " selected");
@@ -470,6 +472,26 @@ function wireBulk() {
     } catch (e) { status("Delete failed: " + (e.message || e), "bad"); }
     finally { setBusy(false); }
   };
+  $("brename").onclick = async () => {
+    const ts = targets();
+    if (!ts.length) { status("Select some rows first.", ""); return; }
+    const tmpl = prompt("Rename template (use {field}, [...] optional groups):",
+      "{author_last}, {author_first}/[{series}/][{series_num} - ]{title}");
+    if (tmpl === null) return;
+    setBusy(true);
+    try {
+      const res = await api("/api/rename/plan", {template: tmpl, selected: ts.map(r => r.rec.path)});
+      if (!res.items.length) { status("Nothing to rename.", ""); return; }
+      const preview = res.items.slice(0, 12).map(x => x.src + "  ->  " + x.dst).join("\\n");
+      const more = res.items.length > 12 ? "\\n...and " + (res.items.length - 12) + " more" : "";
+      if (!confirm("Rename " + res.items.length + " file(s)?\\n\\n" + preview + more)) return;
+      const r2 = await api("/api/rename/apply", {items: res.items});
+      const bad = r2.results.filter(x => !x.ok).length;
+      await load();
+      status("Renamed " + (res.items.length - bad) + " file(s)." + (bad ? (" " + bad + " failed.") : ""), bad ? "bad" : "good");
+    } catch (e) { status("Rename failed: " + (e.message || e), "bad"); }
+    finally { setBusy(false); }
+  };
 }
 
 /* ---------- load / save / undo ---------- */
@@ -488,6 +510,7 @@ async function load() {
     const data = await api("/api/scan");
     S.readOnly = !!data.read_only;
      $("absscan").disabled = !data.abs_configured;
+     $("absclean").disabled = !data.abs_configured;
     $("root").textContent = data.root;
     $("root").title = data.root;
     S.rows = data.rows.map(mkRow);
@@ -585,6 +608,15 @@ $("absscan").onclick = async () => {
     const res = await api("/api/abs/scan", {});
     status("ABS scan triggered for library " + res.library_id + ".", "good");
   } catch (e) { status("ABS scan failed: " + (e.message || e), "bad"); }
+  finally { setBusy(false); }
+};
+$("absclean").onclick = async () => {
+  if (!confirm("Remove ABS items marked missing for this folder?")) return;
+  setBusy(true);
+  try {
+    const res = await api("/api/abs/clean-missing", {});
+    status("Removed " + (res.result.removed || 0) + " missing ABS item(s).", "good");
+  } catch (e) { status("Clean failed: " + (e.message || e), "bad"); }
   finally { setBusy(false); }
 };
 $("reload").onclick = () => { if (!anyDirty() || confirm("Discard unsaved changes and rescan?")) load(); };

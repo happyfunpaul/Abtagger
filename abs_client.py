@@ -88,3 +88,14 @@ class AbsClient:
             if p == target or p.endswith("/" + target) or target in p:
                 out.append(it)
         return out
+
+    def clean_missing_items(self, library_id: str) -> dict[str, Any]:
+        removed = 0
+        for it in self.get_library_items(library_id):
+            if it.get("isMissing"):
+                try:
+                    self._request("DELETE", f"/api/items/{it['id']}")
+                    removed += 1
+                except Exception:
+                    pass
+        return {"removed": removed}
