@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from books import book_key, group_rows, normalize_author, normalize_title  # noqa: F401
+
 ILLEGAL = '<>:"/\\|?*'
 RESERVED = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
 
@@ -123,22 +125,6 @@ BUILTIN_TEMPLATES: list[tuple[str, str]] = [
 ]
 
 
-def normalize_title(title: str) -> str:
-    t = (title or "").lower()
-    # strip common audiobook suffixes
-    t = re.sub(r"\((un)?abridged\)", "", t)
-    t = re.sub(r"[^a-z0-9]+", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-
-def normalize_author(author: str) -> str:
-    a = (author or "").lower()
-    a = re.sub(r"[^a-z0-9]+", " ", a)
-    a = re.sub(r"\s+", " ", a).strip()
-    return a
-
-
 def duplicate_key(rec: dict[str, Any]) -> str:
     t = normalize_title(rec.get("title", ""))
     a = normalize_author(rec.get("author", ""))
@@ -166,24 +152,8 @@ class RenamePlan:
     is_dir_move: bool = False
 
 
-def book_key(r: dict[str, Any]) -> tuple[str, str, str, str]:
-    parent = r["path"].rsplit("/", 1)[0] if "/" in r["path"] else ""
-    return (parent, rename_normalize_title(r.get("title", "")),
-            normalize_author(r.get("author", "")),
-            normalize_title(r.get("series", "")))
-
-
 def rename_normalize_title(t: str) -> str:
     return normalize_title(t)
-
-
-def group_rows(rows: list[dict[str, Any]]) -> dict[tuple, list[dict[str, Any]]]:
-    groups: dict[tuple, list[dict[str, Any]]] = {}
-    for r in rows:
-        if r.get("error"):
-            continue
-        groups.setdefault(book_key(r), []).append(r)
-    return groups
 
 
 def _part_suffix(original: str, index: int, total: int) -> str:

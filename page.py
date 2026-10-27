@@ -28,6 +28,7 @@ button.primary:hover:not(:disabled){filter:brightness(1.08);background:var(--acc
 .bulk .grp{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding-right:14px;margin-right:6px;border-right:1px solid var(--line)}
 .bulk .grp:last-child{border-right:0}
 .bulk input[type=text]{width:11rem}
+label.chk{display:flex;gap:4px;align-items:center;white-space:nowrap}
 .bulk label.chk{display:flex;gap:4px;align-items:center}
 #status{padding:6px 16px;min-height:2rem;font-size:13px;color:var(--dim)}
 #status.bad{color:var(--bad)}
@@ -41,7 +42,7 @@ tbody td{padding:0;border-bottom:1px solid var(--line);vertical-align:middle}
 tbody tr.sel td{background:var(--sel)}
 tbody tr.err td{background:var(--badbg)}
 td.cb,th.cb{width:34px;text-align:center;padding:0 6px}
-td.path{padding:4px 8px;min-width:16rem;max-width:26rem}
+td.path{padding:4px 8px;min-width:16rem;max-width:26rem;overflow:hidden}
 td.path .name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 td.path .dir{display:block;font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
 td.path .msg{display:block;font-size:12px;color:var(--bad);white-space:normal}
@@ -51,6 +52,16 @@ td input[type=text]:disabled{color:var(--dim)}
 td.dirty{background:var(--dirty);box-shadow:inset 3px 0 0 var(--dirty-line)}
 td.invalid{background:var(--badbg);box-shadow:inset 3px 0 0 var(--bad)}
 td.info{padding:4px 8px;color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums;font-size:13px}
+td input[type=text].mixed{color:var(--dim);font-style:italic}
+.badge{display:inline-block;margin-left:6px;padding:0 6px;border:1px solid var(--line);border-radius:9px;background:var(--sel);font-size:11px;font-weight:600;line-height:1.5;vertical-align:1px}
+.expander{border:0;background:transparent;padding:0 5px 0 0;color:var(--dim);font-size:12px;line-height:1;cursor:pointer}
+.expander:hover:not(:disabled){background:transparent;color:var(--ink)}
+tr.book td.path .bookline{display:flex;align-items:center;min-width:0}
+tr.book td.path .bookline .name{flex:0 1 auto;min-width:0}
+tr.book td.path .bookline .expander,tr.book td.path .bookline .badge{flex:0 0 auto}
+tr.child td.path{padding-left:2.6rem;position:relative}
+tr.child td.path::before{content:"↳";position:absolute;left:1.05rem;color:var(--dim)}
+tr.child td.path .dir{display:none}
 .busy .wrap{pointer-events:none;opacity:.6}
 @media (max-width:700px){header .title #root{display:none}}
 </style>
@@ -59,6 +70,7 @@ td.info{padding:4px 8px;color:var(--dim);white-space:nowrap;font-variant-numeric
 <header>
   <div class="title"><strong>abtagger</strong><span id="root" class="dim"></span></div>
   <div class="spacer"></div>
+  <label class="chk" title="One row per book; expand a book to edit its individual files"><input id="groupbooks" type="checkbox"> Book view</label>
   <input id="filter" type="search" placeholder="Filter rows..." aria-label="Filter rows" autocomplete="off">
   <button id="reload" type="button">Reload</button>
   <button id="undo" type="button" title="Restore the tags overwritten by the previous save">Undo last save</button>
@@ -147,7 +159,13 @@ const FIELDS = COLS.map(c => c.key);
 const LABEL = Object.fromEntries(COLS.map(c => [c.key, c.label]));
 const $ = (id) => document.getElementById(id);
 const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
-const S = {rows: [], vis: [], sortKey: "path", sortDir: 1, filter: "", last: null, readOnly: false, busy: false};
+const S = {rows: [], vis: [], books: [], visBooks: [], sortKey: "path", sortDir: 1,
+           filter: "", last: null, lastBook: null, readOnly: false, busy: false,
+           view: "books", expanded: new Set()};
+try {
+  const storedView = localStorage.getItem("abtagger-view");
+  if (storedView === "files" || storedView === "books") S.view = storedView;
+} catch (e) { /* storage unavailable */ }
 
 let token = "";
 try {
@@ -200,6 +218,130 @@ function problem(f, v) {
 }
 const rowProblems = (r) => dirtyFields(r).filter(f => problem(f, r.cur[f]));
 
+/* ---------- book grouping ---------- */
+function mkBook(rows) {
+  const id = rows[0].rec.path;
+  return {id, rows, count: rows.length, expanded: S.expanded.has(id)};
+}
+
+function buildBooks() {
+  const groups = new Map();
+  for (const r of S.rows) {
+    const k = r.rec.book_key || ("path:" + r.rec.path);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  S.books = [...groups.values()].map(mkBook);
+  S.lastBook = null;
+}
+
+function commonField(book, f) {
+  let v = null, mixed = false;
+  for (const r of book.rows) {
+    const x = r.cur[f] || "";
+    if (v === null) v = x;
+    else if (x !== v) { mixed = true; break; }
+  }
+  return {value: mixed ? "" : (v || ""), mixed};
+}
+
+function commonDir(book) {
+  const dirs = book.rows.map(r => r.rec.dir);
+  if (!dirs.length) return "";
+  let prefix = dirs[0];
+  for (const d of dirs.slice(1)) {
+    while (prefix && d !== prefix && !d.startsWith(prefix + "/")) {
+      prefix = prefix.includes("/") ? prefix.slice(0, prefix.lastIndexOf("/")) : "";
+    }
+  }
+  return prefix;
+}
+
+function bookTitle(book) {
+  if (book.count === 1) return book.rows[0].rec.name;
+  const album = commonField(book, "album");
+  if (!album.mixed && album.value) return album.value;
+  const title = commonField(book, "title");
+  if (!title.mixed && title.value) return title.value;
+  const dir = commonDir(book);
+  if (dir) return dir.split("/").pop();
+  return "Untitled book";
+}
+
+function bookState(book, f) {
+  let dirty = false, invalid = false, msg = "";
+  for (const r of book.rows) {
+    if (!isDirtyField(r, f)) continue;
+    dirty = true;
+    const p = problem(f, r.cur[f]);
+    if (p) { invalid = true; if (!msg) msg = p; }
+  }
+  return {dirty, invalid, msg};
+}
+
+function bookValue(book, k) {
+  if (k === "path") return bookTitle(book);
+  if (k === "duration") return book.rows.reduce((n, r) => n + (r.rec.duration || 0), 0);
+  const c = commonField(book, k);
+  return c.mixed ? "" : c.value;
+}
+
+function visibleBooks() {
+  const q = S.filter.trim().toLowerCase();
+  let books = S.books;
+  if (q) books = books.filter(b => b.rows.some(r =>
+    (r.rec.path + "\n" + FIELDS.map(f => r.cur[f]).join("\n")).toLowerCase().includes(q)));
+  const k = S.sortKey, d = S.sortDir;
+  return books.slice().sort((a, b) => {
+    const x = bookValue(a, k), y = bookValue(b, k);
+    if (typeof x === "number") return (x - y) * d || collator.compare(a.rows[0].rec.path, b.rows[0].rec.path);
+    if (x === "" && y !== "") return 1;
+    if (y === "" && x !== "") return -1;
+    return collator.compare(x, y) * d || collator.compare(a.rows[0].rec.path, b.rows[0].rec.path);
+  });
+}
+
+function refreshBookPath(tr, book) {
+  const cp = tr.querySelector("td.path");
+  if (!cp) return;
+  const n = cp.querySelector(".name");
+  if (n) n.textContent = bookTitle(book);
+  cp.title = book.rows.map(r => r.rec.path).join("\n") +
+    (book.count > 1 ? "\n\nEdits here apply to all " + book.count + " files." : "");
+}
+
+function refreshBookCells(tr, book) {
+  tr.querySelectorAll("input[data-bf]").forEach(inp => {
+    const f = inp.dataset.bf, c = commonField(book, f), st = bookState(book, f);
+    inp.value = c.value;
+    inp.classList.toggle("mixed", c.mixed);
+    inp.placeholder = c.mixed ? "— mixed —" : "";
+    const cell = inp.parentElement;
+    cell.classList.toggle("dirty", st.dirty && !st.invalid);
+    cell.classList.toggle("invalid", st.invalid);
+    cell.title = st.msg;
+  });
+  refreshBookPath(tr, book);
+}
+
+function onBookChange(inp) {
+  const tr = inp.closest("tr"), book = tr._book, f = inp.dataset.bf;
+  for (const r of book.rows) if (!r.rec.error) r.cur[f] = inp.value;
+  inp.classList.remove("mixed");
+  inp.placeholder = "";
+  const st = bookState(book, f), cell = inp.parentElement;
+  cell.classList.toggle("dirty", st.dirty && !st.invalid);
+  cell.classList.toggle("invalid", st.invalid);
+  cell.title = st.msg;
+  let sib = tr.nextElementSibling;
+  while (sib && sib.classList.contains("child")) {
+    if (sib._row) refreshRowCells(sib);
+    sib = sib.nextElementSibling;
+  }
+  refreshBookPath(tr, book);
+  updateCounts();
+}
+
 function fmtDur(s) {
   s = Math.round(s || 0);
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
@@ -246,6 +388,8 @@ function buildHead() {
 }
 
 function updateHead() {
+  const pathTh = document.querySelector('#head th[data-k="path"]');
+  if (pathTh) pathTh.dataset.base = S.view === "books" ? "Book" : "File";
   document.querySelectorAll("#head th[data-k]").forEach(th => {
     const on = th.dataset.k === S.sortKey;
     const base = th.dataset.base || (th.dataset.base = th.textContent);
@@ -265,10 +409,10 @@ function td(cls) {
   return el;
 }
 
-function rowEl(r, i) {
+function rowEl(r, i, child) {
   const tr = document.createElement("tr");
   tr._row = r;
-  tr.className = (r.sel ? "sel " : "") + (r.rec.error || r.msg ? "err " : "");
+  tr.className = (child ? "child " : "") + (r.sel ? "sel " : "") + (r.rec.error || r.msg ? "err " : "");
   const c0 = td("cb");
   const cb = document.createElement("input");
   cb.type = "checkbox"; cb.checked = r.sel; cb.dataset.act = "sel";
@@ -311,12 +455,118 @@ function rowEl(r, i) {
   return tr;
 }
 
+function bookEl(book, i) {
+  const tr = document.createElement("tr");
+  tr._book = book;
+  tr.className = "book";
+  const selectable = book.rows.filter(r => !r.rec.error);
+  const allSel = selectable.length > 0 && selectable.every(r => r.sel);
+  const someSel = selectable.some(r => r.sel);
+  const errCount = book.rows.length - selectable.length;
+  const msgs = book.rows.map(r => r.msg).filter(Boolean);
+  if (allSel) tr.classList.add("sel");
+  if (errCount || msgs.length) tr.classList.add("err");
+
+  const c0 = td("cb");
+  const cb = document.createElement("input");
+  cb.type = "checkbox"; cb.checked = allSel; cb.indeterminate = someSel && !allSel;
+  cb.dataset.act = "bsel";
+  cb.disabled = book.rows.every(r => r.rec.error);
+  cb.setAttribute("aria-label", "Select book " + bookTitle(book));
+  c0.appendChild(cb);
+  tr.appendChild(c0);
+
+  const cp = td("path");
+  const paths = book.rows.map(r => r.rec.path);
+  cp.title = paths.join("\n") + (book.count > 1 ? "\n\nEdits here apply to all " + book.count + " files." : "");
+  const line = document.createElement("div");
+  line.className = "bookline";
+  if (book.count > 1) {
+    const ex = document.createElement("button");
+    ex.type = "button"; ex.className = "expander"; ex.dataset.act = "expand";
+    ex.textContent = book.expanded ? "▾" : "▸";
+    ex.setAttribute("aria-expanded", String(book.expanded));
+    ex.title = book.expanded ? "Hide individual files" : "Show individual files";
+    ex.setAttribute("aria-label", (book.expanded ? "Collapse " : "Expand ") + book.count + " files in " + bookTitle(book));
+    line.appendChild(ex);
+  }
+  const n = document.createElement("span"); n.className = "name"; n.textContent = bookTitle(book);
+  line.appendChild(n);
+  if (book.count > 1) {
+    const badge = document.createElement("span");
+    badge.className = "badge"; badge.textContent = book.count + " files";
+    line.appendChild(badge);
+  }
+  cp.appendChild(line);
+  const dir = book.count === 1 ? book.rows[0].rec.dir : commonDir(book);
+  if (dir) {
+    const d = document.createElement("span"); d.className = "dir"; d.textContent = dir;
+    cp.appendChild(d);
+  }
+  const msgParts = [];
+  if (errCount) msgParts.push(errCount + " unreadable file" + (errCount === 1 ? "" : "s") +
+                             (book.count > errCount ? " - expand to edit the rest" : ""));
+  if (msgs.length) msgParts.push(msgs[0]);
+  if (msgParts.length) {
+    const m = document.createElement("span"); m.className = "msg"; m.textContent = msgParts.join("; ");
+    cp.appendChild(m);
+  }
+  tr.appendChild(cp);
+
+  const canEditBook = book.rows.length > 0 && !S.readOnly && book.rows.every(r => !r.rec.error);
+  COLS.forEach(c => {
+    const cell = td();
+    const common = commonField(book, c.key);
+    const st = bookState(book, c.key);
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.value = common.value; inp.dataset.bf = c.key;
+    inp.spellcheck = false; inp.autocomplete = "off";
+    inp.disabled = !canEditBook;
+    inp.classList.toggle("mixed", common.mixed);
+    if (common.mixed) inp.placeholder = "— mixed —";
+    if (st.dirty) cell.classList.add("dirty");
+    if (st.invalid) { cell.classList.add("invalid"); cell.title = st.msg; }
+    inp.setAttribute("aria-label", c.label + " for book " + bookTitle(book) +
+                     (common.mixed ? " (files have different values)" : ""));
+    if (common.mixed) inp.title = "Files have different values; typing here sets all " + book.count + " files";
+    cell.appendChild(inp);
+    tr.appendChild(cell);
+  });
+
+  const len = td("info");
+  len.textContent = fmtDur(book.rows.reduce((sum, r) => sum + (r.rec.duration || 0), 0));
+  tr.appendChild(len);
+  const chp = td("info");
+  const chapters = book.rows.reduce((sum, r) => sum + (r.rec.chapters || 0), 0);
+  chp.textContent = chapters ? String(chapters) : "–";
+  tr.appendChild(chp);
+  const cov = td("info");
+  cov.textContent = book.rows.some(r => r.rec.cover) ? "yes" : "–";
+  tr.appendChild(cov);
+  return tr;
+}
+
 function render() {
-  S.vis = visible();
+  if (S.view === "books") {
+    S.visBooks = visibleBooks();
+    S.vis = S.visBooks.flatMap(b => b.rows);
+  } else {
+    S.visBooks = [];
+    S.vis = visible();
+  }
   const tb = $("grid").tBodies[0];
   tb.textContent = "";
   const frag = document.createDocumentFragment();
-  S.vis.forEach((r, i) => frag.appendChild(rowEl(r, i)));
+  if (S.view === "books") {
+    S.visBooks.forEach((book, i) => {
+      frag.appendChild(bookEl(book, i));
+      if (book.expanded && book.count > 1) {
+        book.rows.forEach(r => frag.appendChild(rowEl(r, i, true)));
+      }
+    });
+  } else {
+    S.vis.forEach((r, i) => frag.appendChild(rowEl(r, i)));
+  }
   tb.appendChild(frag);
   updateHead();
   updateCounts();
@@ -334,7 +584,13 @@ function updateCounts() {
   $("undo").disabled = S.busy || S.readOnly;
   $("bset").disabled = $("breplace").disabled = $("bcopy").disabled = $("brevsel").disabled = $("bdelete").disabled = $("brename").disabled = $("btitlefn").disabled = S.readOnly || sel === 0;
   $("brevall").disabled = S.readOnly || dirty.length === 0;
-  const parts = [S.vis.length + (S.vis.length === S.rows.length ? "" : " of " + S.rows.length) + " files"];
+  const parts = [];
+  if (S.view === "books") {
+    const shown = S.visBooks.length;
+    const total = S.books.length;
+    parts.push((shown === total ? total : shown + " of " + total) + " books");
+  }
+  parts.push(S.vis.length + (S.vis.length === S.rows.length ? "" : " of " + S.rows.length) + " files");
   if (sel) parts.push(sel + " selected");
   if (dirty.length) parts.push(dirty.length + " unsaved");
   $("count").textContent = parts.join(" · ");
@@ -351,6 +607,11 @@ function onCellChange(inp) {
   cell.classList.toggle("dirty", dirty && !p);
   cell.classList.toggle("invalid", !!p);
   cell.title = p;
+  if (S.view === "books" && tr.classList.contains("child")) {
+    let p = tr.previousElementSibling;
+    while (p && !p._book) p = p.previousElementSibling;
+    if (p) refreshBookCells(p, p._book);
+  }
   updateCounts();
 }
 
@@ -370,38 +631,82 @@ function wireTable() {
   const tb = tbody();
   tb.addEventListener("input", (e) => {
     const inp = e.target;
-    if (inp instanceof HTMLInputElement && inp.dataset.f) onCellChange(inp);
+    if (!(inp instanceof HTMLInputElement)) return;
+    if (inp.dataset.bf) onBookChange(inp);
+    else if (inp.dataset.f) onCellChange(inp);
   });
   tb.addEventListener("change", (e) => {
     const inp = e.target;
-    if (inp instanceof HTMLInputElement && inp.dataset.f && inp.value !== inp.value.trim()) {
+    if (!(inp instanceof HTMLInputElement)) return;
+    if ((inp.dataset.f || inp.dataset.bf) && inp.value !== inp.value.trim()) {
       inp.value = inp.value.trim();
-      onCellChange(inp);
+      if (inp.dataset.bf) onBookChange(inp); else onCellChange(inp);
     }
   });
   tb.addEventListener("keydown", (e) => {
     const inp = e.target;
-    if (!(inp instanceof HTMLInputElement) || !inp.dataset.f) return;
+    if (!(inp instanceof HTMLInputElement)) return;
+    const f = inp.dataset.bf || inp.dataset.f;
+    if (!f) return;
+    const attr = inp.dataset.bf ? "bf" : "f";
     const tr = inp.closest("tr");
     let step = 0;
     if (e.key === "ArrowDown" || (e.key === "Enter" && !e.shiftKey)) step = 1;
     else if (e.key === "ArrowUp" || (e.key === "Enter" && e.shiftKey)) step = -1;
     else if (e.key === "Escape") {
-      inp.value = tr._row.rec[inp.dataset.f] || "";
-      onCellChange(inp);
+      if (inp.dataset.bf) {
+        const book = tr._book;
+        book.rows.forEach(r => { r.cur[f] = r.rec[f] || ""; });
+        render();
+      } else {
+        inp.value = tr._row.rec[f] || "";
+        onCellChange(inp);
+      }
       return;
     }
     if (!step) return;
     e.preventDefault();
-    const next = tb.rows[tr.sectionRowIndex + step];
-    if (!next) return;
-    const t = next.querySelector('input[data-f="' + inp.dataset.f + '"]');
-    if (t && !t.disabled) { t.focus(); t.select(); }
+    const rows = [...tb.rows], start = rows.indexOf(tr);
+    for (let j = start + step; j >= 0 && j < rows.length; j += step) {
+      const t = rows[j].querySelector('input[data-' + attr + '="' + f + '"]');
+      if (t && !t.disabled) { t.focus(); t.select(); return; }
+    }
   });
   tb.addEventListener("click", (e) => {
+    const ex = e.target.closest && e.target.closest('button[data-act="expand"]');
+    if (ex) {
+      const book = ex.closest("tr")._book;
+      if (S.expanded.has(book.id)) S.expanded.delete(book.id); else S.expanded.add(book.id);
+      book.expanded = !book.expanded;
+      render();
+      return;
+    }
     const cb = e.target;
-    if (!(cb instanceof HTMLInputElement) || cb.dataset.act !== "sel") return;
+    if (!(cb instanceof HTMLInputElement)) return;
+    if (cb.dataset.act === "bsel") {
+      const tr = cb.closest("tr"), book = tr._book;
+      if (!book) return;
+      const idx = S.visBooks.indexOf(book);
+      if (e.shiftKey && S.lastBook !== null && S.lastBook < S.visBooks.length) {
+        const [a, b] = [Math.min(S.lastBook, idx), Math.max(S.lastBook, idx)];
+        for (let i = a; i <= b; i++) {
+          S.visBooks[i].rows.forEach(r => { if (!r.rec.error) r.sel = cb.checked; });
+        }
+      } else {
+        book.rows.forEach(r => { if (!r.rec.error) r.sel = cb.checked; });
+      }
+      S.lastBook = idx;
+      render();
+      return;
+    }
+    if (cb.dataset.act !== "sel") return;
     const tr = cb.closest("tr"), idx = tr.sectionRowIndex;
+    if (S.view === "books") {
+      tr._row.sel = cb.checked;
+      S.lastBook = null;
+      render();
+      return;
+    }
     if (e.shiftKey && S.last !== null && S.last < S.vis.length) {
       const [a, b] = [Math.min(S.last, idx), Math.max(S.last, idx)];
       for (let i = a; i <= b; i++) {
@@ -429,6 +734,7 @@ function wireTable() {
     const th = e.target.closest("th[data-k]");
     if (!th) return;
     if (S.sortKey === th.dataset.k) S.sortDir = -S.sortDir; else { S.sortKey = th.dataset.k; S.sortDir = 1; }
+    S.last = null; S.lastBook = null;
     render();
   });
   $("head").addEventListener("keydown", (e) => {
@@ -444,9 +750,7 @@ function bulkApply(fn, doneMsg) {
   if (!ts.length) { status("Select some rows first (checkboxes, shift-click for a range).", ""); return; }
   let n = 0;
   ts.forEach(r => { if (fn(r)) n++; });
-  const sortAffected = S.sortKey === $("bfield").value;
-  if (sortAffected) render(); else ts.forEach(r => { const i = S.vis.indexOf(r); if (i >= 0) refreshRowCells(tbody().rows[i]); });
-  updateCounts();
+  render();
   status(doneMsg(n, ts.length), n ? "good" : "");
 }
 
@@ -569,12 +873,15 @@ async function load() {
     $("root").title = data.root;
     S.rows = data.rows.map(mkRow);
     S.last = null;
+    buildBooks();
     render();
     const errs = S.rows.filter(r => r.rec.error).length;
-    status(S.rows.length + " audio files found" + (errs ? (", " + errs + " unreadable") : "") +
+    const multi = S.books.filter(b => b.count > 1).length;
+    const grouped = multi ? (" in " + S.books.length + " books (" + multi + " multi-file)") : "";
+    status(S.rows.length + " audio files found" + grouped + (errs ? (", " + errs + " unreadable") : "") +
            (S.readOnly ? " (read-only mode)." : ". Click a cell to edit; Enter moves down."), errs ? "bad" : "");
   } catch (e) {
-    S.rows = []; render();
+    S.rows = []; buildBooks(); render();
     status(String(e.message || e), "bad");
   } finally {
     setBusy(false);
@@ -614,6 +921,7 @@ async function save() {
     S.rows.forEach(r => { r.msg = ""; });
     const res = await api("/api/save", {items});
     const {ok, bad} = applyResults(res.results);
+    buildBooks();
     render();
     status("Saved " + ok + (ok === 1 ? " file" : " files") + (bad ? (". " + bad + " failed - see the red rows.") : "."), bad ? "bad" : "good");
   } catch (e) {
@@ -630,6 +938,7 @@ async function undo() {
   try {
     const res = await api("/api/undo", {});
     const {ok, bad} = applyResults(res.results);
+    buildBooks();
     render();
     status("Undid " + ok + (ok === 1 ? " file" : " files") + (bad ? (". " + bad + " could not be restored (changed since) - see the red rows.") : "."), bad ? "bad" : "good");
   } catch (e) {
@@ -648,6 +957,16 @@ async function undo() {
 buildHead();
 wireTable();
 wireBulk();
+$("groupbooks").checked = S.view === "books";
+$("groupbooks").onchange = (e) => {
+  S.view = e.target.checked ? "books" : "files";
+  S.last = null; S.lastBook = null;
+  try { localStorage.setItem("abtagger-view", S.view); } catch (err) { /* ignore */ }
+  render();
+  status(S.view === "books"
+    ? "Book view: one row per book. Use the triangle to edit individual files."
+    : "File view: one row per audio file.", "");
+};
 $("settings").onclick = () => { $("modal").style.display = "flex"; };
 $("help").onclick = () => { $("helpmodal").style.display = "flex"; };
 $("h_close").onclick = () => { $("helpmodal").style.display = "none"; };
@@ -672,7 +991,7 @@ $("s_save").onclick = async () => {
 let ft = null;
 $("filter").addEventListener("input", (e) => {
   clearTimeout(ft);
-  ft = setTimeout(() => { S.filter = e.target.value; render(); }, 120);
+  ft = setTimeout(() => { S.filter = e.target.value; S.last = null; S.lastBook = null; render(); }, 120);
 });
 $("save").onclick = save;
 $("undo").onclick = undo;

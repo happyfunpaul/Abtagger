@@ -4,8 +4,9 @@
 
 A small, local, spreadsheet-style editor for **audiobook** metadata. Point it at a
 folder and it scans recursively for `.m4b` / `.m4a` / `.mp3` files, shows one row
-per file in an editable grid, and writes the tags **into the audio files
-themselves**. Nothing is renamed or moved unless you ask.
+per book (expandable to the individual files) in an editable grid, and writes the
+tags **into the audio files themselves**. Nothing is renamed or moved unless you
+ask.
 
 ![abtagger grid](screenshots/screenshot.png)
 
@@ -27,6 +28,10 @@ Then open the URL it prints (it contains a random access token).
 - Bulk operations: set a field on selected rows, find/replace (literal or regex),
   copy one field into another, revert selected/all.
 - Per-file and bulk editing, with validation and dirty-cell highlighting.
+- Book-level grouping view: one row per book, even for a multi-file audiobook.
+  A file-count badge marks multi-file books; book-row edits apply to every file,
+  and fields whose files differ show `— mixed —`. Expand the row to edit the
+  individual files (for example, per-chapter titles).
 - Optimistic concurrency: refuses to overwrite a file that changed on disk since load.
 - Undo the last save (value-based).
 - Rename/move files to a configurable template (with conditional folders).
@@ -113,12 +118,11 @@ Stored in `~/.abtagger/config.json` (ABS URL/token/library, rename template).
 python -m unittest discover -s tests
 ```
 
-25 tests covering validation, path safety, tag round-trips, rename templates, and
-de-duplication.
+38 tests covering validation, path safety, tag round-trips, rename templates,
+de-duplication, and book grouping.
 
 ## Roadmap
 
-- Book-level grouping view (one row per book, even for multi-file books).
 - Rename preview table (instead of a confirm dialog).
 - Duplicate view with color-coded groups.
 - Metadata fetch with preview/diff.

@@ -55,9 +55,14 @@
    for tens of thousands, and it blocks saves while running. Virtualise/paginate
    the grid and consider an incremental scan or a background rescan before scaling.
 
-8. **One row per file, not per book.** Multi-part audiobooks show as N identical-ish
-   rows. Bulk tools mitigate this, but a future book-level view (group rows by
-   folder or by series+title) is a bigger UX change and affects selection/undo.
+8. **Book view is a grouping heuristic, not an identity.** `books.py` groups by
+   album+author first, then filename part markers, then title, and folds `CD1` /
+   `Disc 2` folders into their parent. That handles the common multi-part layouts,
+   but a flat folder with missing tags, or two editions of the same book, can still
+   be grouped wrongly or split. The UI mitigates this by showing a file count and
+   expandable per-file rows. Selection, undo, and writes remain file-based: a book
+   row is only a view over one or more file rows, and book-row edits fan out to
+   every file in the group.
 
 9. **Filesystem operations are not transactional.** A rename/move pass that fails
    halfway leaves a partial layout. Any future "layout to ABS-recommended structure"
@@ -121,5 +126,6 @@
   genuinely outgrows vanilla JS.
 - **"Store undo as full file copies."** Partially: do it for destructive ops only;
   value-based undo is fine and far cheaper for routine tag edits.
-- **"Group rows by book now."** Defer: grouping heuristic (folder vs tags) is itself
-  a product decision; the file-level view plus bulk tools is a safe stepping stone.
+- **"Group rows by book with no way back to files."** Rejected: grouping is a
+  heuristic, so the book row stays expandable and every file remains individually
+  editable. The file-level view is still one toggle away.

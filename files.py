@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from books import book_key
 from tags import EXT_KIND, FIELDS, READERS
 
 
@@ -56,6 +57,7 @@ def read_record(path: Path, root: Path) -> dict[str, Any]:
         rec.update(READERS[EXT_KIND[path.suffix.lower()]](path))
     except Exception as e:  # unreadable / corrupt file: show it, but do not allow edits
         rec["error"] = f"{type(e).__name__}: {e}"
+    rec["book_key"] = book_key(rec)
     return rec
 
 
