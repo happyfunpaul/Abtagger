@@ -56,7 +56,14 @@ def _field_value(rec: dict[str, Any], key: str, original_name: str) -> str:
         return os.path.splitext(original_name)[0]
     if key == "ext":
         return os.path.splitext(original_name)[1].lstrip(".")
-    v = str(rec.get(key, "") or "").strip()
+    if key in ("title", "book_title", "album"):
+        # In ABS terms the book title is the album tag; `title` is the
+        # per-file track/chapter title.
+        v = str(rec.get("album") or rec.get("title") or "").strip()
+    elif key == "track_title":
+        v = str(rec.get("title") or "").strip()
+    else:
+        v = str(rec.get(key, "") or "").strip()
     return v.replace("/", " ").replace("\\", " ")
 
 

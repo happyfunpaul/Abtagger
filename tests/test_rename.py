@@ -39,6 +39,12 @@ class TestRenderTemplate(unittest.TestCase):
         self.assertNotIn(":", out)
         self.assertNotIn("*", out)
 
+    def test_title_prefers_book_title(self):
+        rec = self.rec(title="Chapter 1", album="The Book", subtitle="A Subtitle")
+        self.assertEqual(rename.render_template("{title}", rec, "x.m4b"), "The Book")
+        self.assertEqual(rename.render_template("{track_title}", rec, "x.m4b"), "Chapter 1")
+        self.assertEqual(rename.render_template("{subtitle}", rec, "x.m4b"), "A Subtitle")
+
     def test_builtin_list(self):
         self.assertTrue(len(rename.BUILTIN_TEMPLATES) >= 4)
 

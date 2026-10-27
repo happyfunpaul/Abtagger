@@ -113,7 +113,8 @@ tr.child td.path .dir{display:none}
   <div style="background:var(--panel);padding:16px;border-radius:8px;max-width:36rem;width:90%;max-height:80vh;overflow:auto;font-size:13px">
     <h3 style="margin:0 0 8px">Rename template language</h3>
     <p>Placeholders in <code>{ }</code> are replaced with the tag value. Wrap optional parts in <code>[ ]</code>: a bracket is emitted only if every placeholder inside it is non-empty.</p>
-    <p><strong>Fields:</strong> {title}, {album}, {author}, {author_first}, {author_last}, {narrator}, {series}, {series_num}, {year}, {genre}, {filename}, {stem}, {ext}</p>
+    <p><strong>Fields:</strong> {title} (book title), {subtitle}, {track_title} (per-file title), {album} (alias for book title), {author}, {author_first}, {author_last}, {narrator}, {series}, {series_num}, {year}, {genre}, {filename}, {stem}, {ext}</p>
+    <p>In the grid, the <strong>Title</strong> column shows the book title in book rows and the per-file track title in expanded/file rows.</p>
     <p><strong>Examples:</strong></p>
     <pre style="background:var(--bg);padding:8px;border-radius:4px;overflow:auto">{author_last}, {author_first}/[{series}/][{series_num} - ]{title}</pre>
     <p>Standalone book (no series) becomes <code>James, Aaron/Assholes.m4b</code>; a series book becomes <code>James, Aaron/Stormlight Archive/1 - The Way of Kings.m4b</code>.</p>
@@ -146,8 +147,9 @@ tr.child td.path .dir{display:none}
 (() => {
 "use strict";
 const COLS = [
-  {key:"title", label:"Title", w:260},
-  {key:"album", label:"Album", w:220},
+  {key:"title", label:"Title", w:240, bookField:"album", fileField:"title",
+   hint:"Book title in book rows; per-file track title in expanded/file rows"},
+  {key:"subtitle", label:"Subtitle", w:180},
   {key:"author", label:"Author", w:170},
   {key:"narrator", label:"Narrator", w:150},
   {key:"series", label:"Series", w:190},
@@ -155,8 +157,19 @@ const COLS = [
   {key:"year", label:"Year", w:90},
   {key:"genre", label:"Genre", w:120},
 ];
-const FIELDS = COLS.map(c => c.key);
-const LABEL = Object.fromEntries(COLS.map(c => [c.key, c.label]));
+const BULK_FIELDS = [
+  {key:"album", label:"Book title"},
+  {key:"subtitle", label:"Subtitle"},
+  {key:"title", label:"Track title"},
+  {key:"author", label:"Author"},
+  {key:"narrator", label:"Narrator"},
+  {key:"series", label:"Series"},
+  {key:"series_num", label:"Series #"},
+  {key:"year", label:"Year"},
+  {key:"genre", label:"Genre"},
+];
+const FIELDS = BULK_FIELDS.map(f => f.key);
+const LABEL = Object.fromEntries(BULK_FIELDS.map(f => [f.key, f.label]));
 const $ = (id) => document.getElementById(id);
 const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
 const S = {rows: [], vis: [], books: [], visBooks: [], sortKey: "path", sortDir: 1,
@@ -281,6 +294,7 @@ function bookState(book, f) {
 
 function bookValue(book, k) {
   if (k === "path") return bookTitle(book);
+  if (k === "title") k = "album";  // book rows show the book title in the Title column
   if (k === "duration") return book.rows.reduce((n, r) => n + (r.rec.duration || 0), 0);
   const c = commonField(book, k);
   return c.mixed ? "" : c.value;
@@ -381,7 +395,10 @@ function buildHead() {
   all.type = "checkbox"; all.id = "selall"; all.setAttribute("aria-label", "Select all visible rows");
   cb.appendChild(all);
   mk("File", "path", "", 260);
-  COLS.forEach(c => mk(c.label, c.key, "", c.w));
+  COLS.forEach(c => {
+    const th = mk(c.label, c.key, "", c.w);
+    if (c.hint) th.title = c.hint;
+  });
   mk("Length", "duration", "", 80);
   mk("Chapters", null, "nosort", 70);
   mk("Cover", null, "nosort", 60);
@@ -437,14 +454,15 @@ function rowEl(r, i, child) {
   tr.appendChild(cp);
 
   COLS.forEach(c => {
+    const f = c.fileField || c.key;
     const cell = td();
     const inp = document.createElement("input");
-    inp.type = "text"; inp.value = r.cur[c.key]; inp.dataset.f = c.key;
+    inp.type = "text"; inp.value = r.cur[f]; inp.dataset.f = f;
     inp.spellcheck = false; inp.autocomplete = "off";
     inp.disabled = !!r.rec.error || S.readOnly;
     inp.setAttribute("aria-label", c.label + ": " + r.rec.name);
-    if (isDirtyField(r, c.key)) cell.classList.add("dirty");
-    if (isDirtyField(r, c.key) && problem(c.key, r.cur[c.key])) { cell.classList.add("invalid"); cell.title = problem(c.key, r.cur[c.key]); }
+    if (isDirtyField(r, f)) cell.classList.add("dirty");
+    if (isDirtyField(r, f) && problem(f, r.cur[f])) { cell.classList.add("invalid"); cell.title = problem(f, r.cur[f]); }
     cell.appendChild(inp);
     tr.appendChild(cell);
   });
@@ -515,11 +533,12 @@ function bookEl(book, i) {
 
   const canEditBook = book.rows.length > 0 && !S.readOnly && book.rows.every(r => !r.rec.error);
   COLS.forEach(c => {
+    const f = c.bookField || c.key;
     const cell = td();
-    const common = commonField(book, c.key);
-    const st = bookState(book, c.key);
+    const common = commonField(book, f);
+    const st = bookState(book, f);
     const inp = document.createElement("input");
-    inp.type = "text"; inp.value = common.value; inp.dataset.bf = c.key;
+    inp.type = "text"; inp.value = common.value; inp.dataset.bf = f;
     inp.spellcheck = false; inp.autocomplete = "off";
     inp.disabled = !canEditBook;
     inp.classList.toggle("mixed", common.mixed);
@@ -755,7 +774,7 @@ function bulkApply(fn, doneMsg) {
 }
 
 function wireBulk() {
-  const opts = (sel) => COLS.forEach(c => { const o = document.createElement("option"); o.value = c.key; o.textContent = c.label; sel.appendChild(o); });
+  const opts = (sel) => BULK_FIELDS.forEach(f => { const o = document.createElement("option"); o.value = f.key; o.textContent = f.label; sel.appendChild(o); });
   opts($("bfield")); opts($("bfrom"));
   $("bfrom").value = "title"; $("bfield").value = "album";
 
@@ -832,9 +851,15 @@ function wireBulk() {
     try {
       const res = await api("/api/rename/plan", {template: tmpl, selected: ts.map(r => r.rec.path)});
       if (!res.items.length) { status("Nothing to rename.", ""); return; }
-      const preview = res.items.slice(0, 12).map(x => x.src + "  ->  " + x.dst).join("\\n");
-      const more = res.items.length > 12 ? "\\n...and " + (res.items.length - 12) + " more" : "";
-      if (!confirm("Rename " + res.items.length + " file(s)?\\n\\n" + preview + more)) return;
+      const shown = res.items.slice(0, 6);
+      const preview = shown.map((x, i) =>
+        (i + 1) + ". " + x.src + "\n   -> " + x.dst
+      ).join("\n");
+      const more = res.items.length > shown.length
+        ? "\n\n...and " + (res.items.length - shown.length) + " more"
+        : "";
+      const noun = res.items.length === 1 ? "file" : "files";
+      if (!confirm("Rename " + res.items.length + " " + noun + "?\n\n" + preview + more)) return;
       const r2 = await api("/api/rename/apply", {items: res.items});
       const bad = r2.results.filter(x => !x.ok).length;
       await load();
@@ -964,8 +989,8 @@ $("groupbooks").onchange = (e) => {
   try { localStorage.setItem("abtagger-view", S.view); } catch (err) { /* ignore */ }
   render();
   status(S.view === "books"
-    ? "Book view: one row per book. Use the triangle to edit individual files."
-    : "File view: one row per audio file.", "");
+    ? "Book view: Title is the book title. Expand a row to edit per-file track titles."
+    : "File view: one row per audio file. Title is that file's track title.", "");
 };
 $("settings").onclick = () => { $("modal").style.display = "flex"; };
 $("help").onclick = () => { $("helpmodal").style.display = "flex"; };

@@ -24,7 +24,7 @@ Then open the URL it prints (it contains a random access token).
 
 ## Features
 
-- Spreadsheet-style grid: title, album, author, narrator, series, series #, year, genre.
+- Spreadsheet-style grid: book title and subtitle, per-file track titles, author, narrator, series, series #, year, genre.
 - Bulk operations: set a field on selected rows, find/replace (literal or regex),
   copy one field into another, revert selected/all.
 - Per-file and bulk editing, with validation and dirty-cell highlighting.
@@ -42,18 +42,38 @@ Then open the URL it prints (it contains a random access token).
 
 ## Tag mapping
 
-Chosen to match what Audiobookshelf reads:
+Chosen to match what Audiobookshelf reads. ABS maps the **album** tag (falling
+back to **title**) to its **Title**, the **subtitle** tag to its **Subtitle**,
+and the **title** tag to per-file track/chapter titles. The grid follows that
+model:
 
-| field       | M4B / M4A                              | MP3 (ID3v2)            |
+| grid field  | M4B / M4A                              | MP3 (ID3v2)            |
 |-------------|----------------------------------------|------------------------|
-| title       | `©nam`                                 | `TIT2`                 |
-| album       | `©alb`                                 | `TALB`                 |
+| title       | `@sti` → `©alb` → `©nam`; writes `©alb` (+ `@sti` if present) | `TALB` → `TIT2`; writes `TALB` |
+| subtitle    | `©st3` → iTunes `SUBTITLE` → Tone `SUBTITLE`; writes the standard tag and updates existing freeform tags | `TIT3` → `TXXX:SUBTITLE`; writes both |
+| track title | `©nam`                                 | `TIT2`                 |
 | author      | `©ART` (+ `aART` if empty/equal)       | `TPE1`                 |
 | narrator    | `©wrt` (composer)                      | `TCOM`                 |
 | series      | iTunes `SERIES` + `©mvn`               | `TXXX:SERIES` + `MVNM` |
 | series_num  | iTunes `SERIES-PART` (+ `©mvi` if int) | `TXXX:SERIES-PART` + `MVIN` |
 | year        | `©day`                                 | `TDRC`                 |
 | genre       | `©gen`                                 | `TCON`                 |
+
+The underlying tag key is still `album` (for ABS compatibility), but it is
+labelled **Title** in the UI. For a single-file book, Title and Track title are
+often the same value; for a multi-file book, Title is the book title and Track
+title is the per-file/chapter title.
+
+Audible/Libation M4Bs often store the display title in a custom `@sti` atom
+and the subtitle in `----:com.pilabor.tone:SUBTITLE` instead of the standard
+atoms. Abtagger reads those as fallbacks, so the grid shows the same Title and
+Subtitle values that ABS shows for those files. Writes update the standard
+atoms and any existing Audible/Tone atoms.
+
+There is one **Title** column. In Book view it shows the book title; when a
+multi-file book is expanded, its child rows show each file's track title in that
+same column. File view shows track titles for every file. This keeps the
+book-level view free of a field that ABS does not expose as book metadata.
 
 ## Safety
 
@@ -81,7 +101,8 @@ python abtagger.py ROOT [options]
 
 ## Rename template language
 
-Rename selected files with a template. Placeholders: `{title}`, `{album}`, `{author}`,
+Rename selected files with a template. Placeholders: `{title}` (book title;
+`{album}` is an alias), `{subtitle}`, `{track_title}` (per-file title), `{author}`,
 `{author_first}`, `{author_last}`, `{narrator}`, `{series}`, `{series_num}`, `{year}`,
 `{genre}`, `{filename}`, `{stem}`, `{ext}`.
 
@@ -118,7 +139,7 @@ Stored in `~/.abtagger/config.json` (ABS URL/token/library, rename template).
 python -m unittest discover -s tests
 ```
 
-38 tests covering validation, path safety, tag round-trips, rename templates,
+40 tests covering validation, path safety, tag round-trips, rename templates,
 de-duplication, and book grouping.
 
 ## Roadmap

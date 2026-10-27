@@ -98,6 +98,21 @@
     writing to a temp file and replacing (where the format library permits) and
     keeping the undo log's old values as a logical backup.
 
+15. **ABS reads `album` as its Title, and `title` as the per-file track title.**
+    The grid has one Title column: book rows read/write album, while expanded
+    file rows and File view read/write title. Do not "simplify" this by removing
+    album:
+    in a multi-file book, album is the book title while each file's title is its
+    chapter/track name. Subtitle is a separate tag (`TIT3` / `©st3`), not an alias
+    for album. The embed convention of `album = Title: Subtitle` used by some tools
+    is deliberately not followed here; the album field is the book title, so a
+    rescan does not fold the subtitle into the Title field.
+    Audible/Libation files add two important variations: the display title often
+    lives in the custom `@sti` atom (which can include "(Unabridged)" and the
+    subtitle) and the subtitle in `----:com.pilabor.tone:SUBTITLE`. `@sti` is only
+    used when it extends the album (one known file has a URL in that atom), and
+    writes update `@sti`/Tone only when those atoms already exist.
+
 ## Architectural recommendations (foundations)
 
 - Keep the single-file entry point (`python abtagger.py`) but split implementation

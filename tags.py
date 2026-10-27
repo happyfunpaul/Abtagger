@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 try:
     from mutagen.id3 import (ID3, ID3NoHeaderError, MVIN, MVNM, TALB, TCOM,
-                             TCON, TDRC, TIT2, TPE1, TXXX)
+                             TCON, TDRC, TIT2, TIT3, TPE1, TXXX)
     from mutagen.mp3 import MP3
     from mutagen.mp4 import MP4, AtomDataType, MP4FreeForm
 except ImportError:  # pragma: no cover
@@ -40,8 +40,11 @@ def _v_series_num(v: str) -> str:
 
 
 FIELD_SPECS: tuple[FieldSpec, ...] = (
-    FieldSpec("title", "Title"),
-    FieldSpec("album", "Album"),
+    # ABS maps `album` (fallback `title`) to its Title, and `subtitle` to its
+    # Subtitle. The raw `title` tag is the per-file track/chapter title.
+    FieldSpec("album", "Title"),
+    FieldSpec("subtitle", "Subtitle"),
+    FieldSpec("title", "Track title"),
     FieldSpec("author", "Author"),
     FieldSpec("narrator", "Narrator"),
     FieldSpec("series", "Series"),
@@ -93,12 +96,28 @@ def _mp4_text(tags, key: str) -> str:
     return str(v).strip()
 
 
+def _mp4_book_title(tags) -> str:
+    """The title ABS displays: Audible/Libation `@sti`, then album, then title."""
+    album = _mp4_text(tags, "\xa9alb")
+    title = _mp4_text(tags, "\xa9nam")
+    aud = _mp4_text(tags, "@sti")
+    # `@sti` is an Audible/Libation custom atom. It normally extends the album
+    # with the subtitle and "(Unabridged)"; occasionally it contains junk, so
+    # only use it when it agrees with the album (or there is no album).
+    extends_album = not album or aud.casefold().startswith(album.casefold())
+    if aud and "http" not in aud.lower() and extends_album:
+        return aud
+    return album or title
+
+
 def read_mp4(path: Path) -> dict[str, Any]:
     f = MP4(str(path))
     t = f.tags
     out = {
         "title": _mp4_text(t, "\xa9nam"),
-        "album": _mp4_text(t, "\xa9alb"),
+        "album": _mp4_book_title(t),
+        "subtitle": (_mp4_text(t, "\xa9st3") or _mp4_text(t, ITUNES + "SUBTITLE")
+                     or _mp4_text(t, TONE + "SUBTITLE")),
         "author": _mp4_text(t, "\xa9ART"),
         "narrator": (_mp4_text(t, "\xa9wrt") or _mp4_text(t, ITUNES + "NARRATOR")
                      or _mp4_text(t, TONE + "NARRATOR")),
@@ -140,6 +159,14 @@ def write_mp4(path: Path, ch: dict[str, str]) -> None:
         put("\xa9nam", ch["title"])
     if "album" in ch:
         put("\xa9alb", ch["album"])
+        # Keep the Audible/Libation display-title atom in step when it exists.
+        if "@sti" in t:
+            put("@sti", ch["album"])
+    if "subtitle" in ch:
+        put("\xa9st3", ch["subtitle"])
+        put_ff(ITUNES + "SUBTITLE", ch["subtitle"])
+        if TONE + "SUBTITLE" in t:
+            put_ff(TONE + "SUBTITLE", ch["subtitle"])
     if "author" in ch:
         old, aart = _mp4_text(t, "\xa9ART"), _mp4_text(t, "aART")
         put("\xa9ART", ch["author"])
@@ -183,6 +210,7 @@ def read_mp3(path: Path) -> dict[str, Any]:
     return {
         "title": one("TIT2"),
         "album": one("TALB"),
+        "subtitle": one("TIT3") or txxx.get("SUBTITLE", ""),
         "author": one("TPE1"),
         "narrator": one("TCOM") or txxx.get("NARRATOR", ""),
         "series": txxx.get("SERIES") or one("MVNM"),
@@ -218,6 +246,9 @@ def write_mp3(path: Path, ch: dict[str, str]) -> None:
         put(TIT2, "TIT2", ch["title"])
     if "album" in ch:
         put(TALB, "TALB", ch["album"])
+    if "subtitle" in ch:
+        put(TIT3, "TIT3", ch["subtitle"])
+        put_txxx("SUBTITLE", ch["subtitle"])
     if "author" in ch:
         put(TPE1, "TPE1", ch["author"])
     if "narrator" in ch:

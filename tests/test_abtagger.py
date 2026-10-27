@@ -89,15 +89,55 @@ class TestRoundTrip(unittest.TestCase):
         rec = abtagger.read_record(self.root / "book.mp3", self.root)
         self.assertEqual(rec["error"], "")
         # write
-        item = {"path": "book.mp3", "changes": {"title": {"old": rec["title"], "new": "RT Title"},
+        item = {"path": "book.mp3", "changes": {"title": {"old": rec["title"], "new": "RT Track"},
+                                                "subtitle": {"old": rec["subtitle"], "new": "RT Subtitle"},
+                                                "album": {"old": rec["album"], "new": "RT Book"},
                                                 "author": {"old": rec["author"], "new": "RT Author"}}}
         new, entry = abtagger.apply_changes(item)
-        self.assertEqual(new["title"], "RT Title")
+        self.assertEqual(new["title"], "RT Track")
+        self.assertEqual(new["subtitle"], "RT Subtitle")
+        self.assertEqual(new["album"], "RT Book")
         self.assertEqual(new["author"], "RT Author")
         # read back
         rec2 = abtagger.read_record(self.root / "book.mp3", self.root)
-        self.assertEqual(rec2["title"], "RT Title")
+        self.assertEqual(rec2["title"], "RT Track")
+        self.assertEqual(rec2["subtitle"], "RT Subtitle")
+        self.assertEqual(rec2["album"], "RT Book")
         self.assertEqual(rec2["author"], "RT Author")
+
+    def test_m4a_audible_title_and_subtitle(self):
+        if not self.has_m4a:
+            self.skipTest("no sample m4a")
+        from mutagen.mp4 import AtomDataType, MP4, MP4FreeForm
+        from tags import TONE
+        p = self.root / "book.m4a"
+        f = MP4(str(p))
+        if f.tags is None:
+            f.add_tags()
+        f.tags["\xa9alb"] = ["Dark Tower I"]
+        f.tags["\xa9nam"] = ["Dark Tower I"]
+        f.tags["@sti"] = ["Dark Tower I (Unabridged)"]
+        f.tags[TONE + "SUBTITLE"] = [MP4FreeForm(b"The Gunslinger", dataformat=AtomDataType.UTF8)]
+        f.save()
+        rec = abtagger.read_record(p, self.root)
+        self.assertEqual(rec["album"], "Dark Tower I (Unabridged)")
+        self.assertEqual(rec["subtitle"], "The Gunslinger")
+        self.assertEqual(rec["title"], "Dark Tower I")
+
+        st = abtagger.State(self.root, "tok", self.d / "state", False, True)
+        abtagger._set_state(st)
+        item = {"path": "book.m4a", "changes": {
+            "album": {"old": rec["album"], "new": "Dark Tower I (Revised)"},
+            "subtitle": {"old": rec["subtitle"], "new": "The Revised Gunslinger"},
+        }}
+        new, entry = abtagger.apply_changes(item)
+        self.assertEqual(new["album"], "Dark Tower I (Revised)")
+        self.assertEqual(new["subtitle"], "The Revised Gunslinger")
+
+        f2 = MP4(str(p))
+        self.assertEqual(f2.tags["@sti"], ["Dark Tower I (Revised)"])
+        tone = bytes(f2.tags[TONE + "SUBTITLE"][0]).decode("utf-8")
+        self.assertEqual(tone, "The Revised Gunslinger")
 
     def test_m4a_roundtrip(self):
         if not self.has_m4a:
@@ -107,14 +147,20 @@ class TestRoundTrip(unittest.TestCase):
         abtagger._set_state(st)
         rec = abtagger.read_record(self.root / "book.m4a", self.root)
         self.assertEqual(rec["error"], "")
-        item = {"path": "book.m4a", "changes": {"title": {"old": rec["title"], "new": "RT Title"},
+        item = {"path": "book.m4a", "changes": {"title": {"old": rec["title"], "new": "RT Track"},
+                                                "subtitle": {"old": rec["subtitle"], "new": "RT Subtitle"},
+                                                "album": {"old": rec["album"], "new": "RT Book"},
                                                 "series": {"old": rec["series"], "new": "RT Series"},
                                                 "series_num": {"old": rec["series_num"], "new": "3.5"}}}
         new, entry = abtagger.apply_changes(item)
-        self.assertEqual(new["title"], "RT Title")
+        self.assertEqual(new["title"], "RT Track")
+        self.assertEqual(new["subtitle"], "RT Subtitle")
+        self.assertEqual(new["album"], "RT Book")
         self.assertEqual(new["series"], "RT Series")
         self.assertEqual(new["series_num"], "3.5")
         rec2 = abtagger.read_record(self.root / "book.m4a", self.root)
+        self.assertEqual(rec2["subtitle"], "RT Subtitle")
+        self.assertEqual(rec2["album"], "RT Book")
         self.assertEqual(rec2["series"], "RT Series")
 
 
