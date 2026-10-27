@@ -119,7 +119,8 @@ it is non-empty. Example:
 
 Use `/` to create folders. Illegal filename characters are sanitized. The template is
 saved in Settings so you are not prompted every time (Shift+click "Rename selected"
-overrides for a one-off).
+overrides for a one-off). The built-in default is the first example above; clearing the
+field or pressing "Use default" in Settings restores it.
 
 ## Audiobookshelf integration
 
@@ -139,7 +140,7 @@ Stored in `~/.abtagger/config.json` (ABS URL/token/library, rename template).
 python -m unittest discover -s tests
 ```
 
-40 tests covering validation, path safety, tag round-trips, rename templates,
+44 tests covering validation, path safety, tag round-trips, rename templates,
 de-duplication, and book grouping.
 
 ## Roadmap

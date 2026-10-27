@@ -8,11 +8,14 @@ from typing import Any
 
 CONFIG_PATH = Path.home() / ".abtagger" / "config.json"
 
+# The documented default (see README.md) for how renamed files are laid out.
+DEFAULT_RENAME_TEMPLATE = "{author_last}, {author_first}/[{series}/][{series_num} - ]{title}"
+
 DEFAULTS = {
     "abs_url": "",
     "abs_token": "",
     "abs_library_ids": [],
-    "rename_template": "{author_last}, {author_first}/[{series}/][{series_num} - ]{title}",
+    "rename_template": DEFAULT_RENAME_TEMPLATE,
     "title_from_filename_cleanup": True,
 }
 
@@ -26,6 +29,10 @@ def load() -> dict[str, Any]:
                 out.update({k: data.get(k, out[k]) for k in DEFAULTS if k in data})
         except (OSError, json.JSONDecodeError):
             pass
+    # A blank/whitespace template means "not set"; fall back to the default so
+    # the settings pane never shows an empty or lost rename format.
+    if not str(out.get("rename_template") or "").strip():
+        out["rename_template"] = DEFAULT_RENAME_TEMPLATE
     return out
 
 
@@ -35,4 +42,6 @@ def save(data: dict[str, Any]) -> None:
     for k in DEFAULTS:
         if k in data:
             cur[k] = data[k]
+    if not str(cur.get("rename_template") or "").strip():
+        cur["rename_template"] = DEFAULT_RENAME_TEMPLATE
     CONFIG_PATH.write_text(json.dumps(cur, indent=2), encoding="utf-8")

@@ -1,3 +1,5 @@
+from settings import DEFAULT_RENAME_TEMPLATE
+
 PAGE = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -127,10 +129,11 @@ tr.child td.path .dir{display:none}
 <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:10;align-items:center;justify-content:center">
   <div style="background:var(--panel);padding:16px;border-radius:8px;max-width:32rem;width:90%;max-height:80vh;overflow:auto">
     <h3 style="margin:0 0 8px">Settings</h3>
-    <label>ABS URL<br><input id="s_abs_url" type="text" style="width:100%"></label><br><br>
-    <label>ABS token<br><input id="s_abs_token" type="text" style="width:100%"></label><br><br>
-    <label>ABS library id (optional)<br><input id="s_abs_lib" type="text" style="width:100%"></label><br><br>
-    <label>Rename template (see ? for fields)<br><input id="s_template" type="text" style="width:100%"></label><br><br>
+    <label>ABS URL<br><input id="s_abs_url" type="text" autocomplete="off" spellcheck="false" style="width:100%"></label><br><br>
+    <label>ABS token<br><input id="s_abs_token" type="text" autocomplete="off" spellcheck="false" style="width:100%"></label><br><br>
+    <label>ABS library id (optional)<br><input id="s_abs_lib" type="text" autocomplete="off" spellcheck="false" style="width:100%"></label><br><br>
+    <label>Rename template (see ? for fields)<br><input id="s_template" type="text" autocomplete="off" spellcheck="false" style="width:100%"></label><br>
+    <button id="s_default" type="button" title="Restore the built-in rename format">Use default</button><br><br>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button id="s_cancel" type="button">Cancel</button>
       <button id="s_save" type="button" class="primary">Save</button>
@@ -172,6 +175,7 @@ const FIELDS = BULK_FIELDS.map(f => f.key);
 const LABEL = Object.fromEntries(BULK_FIELDS.map(f => [f.key, f.label]));
 const $ = (id) => document.getElementById(id);
 const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
+const DEFAULT_TEMPLATE = "__DEFAULT_RENAME_TEMPLATE__";
 const S = {rows: [], vis: [], books: [], visBooks: [], sortKey: "path", sortDir: 1,
            filter: "", last: null, lastBook: null, readOnly: false, busy: false,
            view: "books", expanded: new Set()};
@@ -843,7 +847,7 @@ function wireBulk() {
     if (!ts.length) { status("Select some rows first.", ""); return; }
     let tmpl = (S.template || "");
     if (ev.shiftKey || !tmpl) {
-      const p = prompt("Rename template (use {field}, [...] optional groups):", tmpl || "{author_last}, {author_first}/[{series}/][{series_num} - ]{title}");
+      const p = prompt("Rename template (use {field}, [...] optional groups):", tmpl || DEFAULT_TEMPLATE);
       if (p === null) return;
       tmpl = p;
     }
@@ -878,6 +882,19 @@ function setBusy(b) {
 
 const anyDirty = () => S.rows.some(r => dirtyFields(r).length);
 
+function applySettings(s) {
+  $("s_abs_url").value = s.abs_url || "";
+  $("s_abs_token").value = s.abs_token || "";
+  $("s_abs_lib").value = (s.abs_library_ids || []).join(",");
+  const tmpl = (s.rename_template || "").trim() || DEFAULT_TEMPLATE;
+  $("s_template").value = tmpl;
+  S.template = tmpl;
+}
+
+async function refreshSettings() {
+  try { applySettings(await api("/api/settings")); } catch (e) { /* ignore */ }
+}
+
 async function load() {
   setBusy(true);
   status("Scanning...", "");
@@ -886,14 +903,7 @@ async function load() {
     S.readOnly = !!data.read_only;
      $("absscan").disabled = !data.abs_configured;
      $("absclean").disabled = !data.abs_configured;
-     try {
-       const s = await api("/api/settings");
-       $("s_abs_url").value = s.abs_url || "";
-       $("s_abs_token").value = s.abs_token || "";
-       $("s_abs_lib").value = (s.abs_library_ids || []).join(",");
-       $("s_template").value = s.rename_template || "";
-       S.template = s.rename_template || "";
-     } catch (e) { /* ignore */ }
+     await refreshSettings();
     $("root").textContent = data.root;
     $("root").title = data.root;
     S.rows = data.rows.map(mkRow);
@@ -982,6 +992,7 @@ async function undo() {
 buildHead();
 wireTable();
 wireBulk();
+$("s_template").placeholder = DEFAULT_TEMPLATE;
 $("groupbooks").checked = S.view === "books";
 $("groupbooks").onchange = (e) => {
   S.view = e.target.checked ? "books" : "files";
@@ -992,7 +1003,14 @@ $("groupbooks").onchange = (e) => {
     ? "Book view: Title is the book title. Expand a row to edit per-file track titles."
     : "File view: one row per audio file. Title is that file's track title.", "");
 };
-$("settings").onclick = () => { $("modal").style.display = "flex"; };
+$("settings").onclick = async () => {
+  $("modal").style.display = "flex";
+  await refreshSettings();
+};
+$("s_default").onclick = () => {
+  $("s_template").value = DEFAULT_TEMPLATE;
+  $("s_template").focus();
+};
 $("help").onclick = () => { $("helpmodal").style.display = "flex"; };
 $("h_close").onclick = () => { $("helpmodal").style.display = "none"; };
 $("s_cancel").onclick = () => { $("modal").style.display = "none"; };
@@ -1006,7 +1024,7 @@ $("s_save").onclick = async () => {
       rename_template: $("s_template").value.trim()
     };
     const s = await api("/api/settings", payload);
-    S.template = s.rename_template || "";
+    applySettings(s);
     $("modal").style.display = "none";
     await load();
     status("Settings saved.", "good");
@@ -1046,3 +1064,6 @@ load();
 </body>
 </html>
 """
+
+# Keep the UI's fallback in sync with settings.DEFAULT_RENAME_TEMPLATE.
+PAGE = PAGE.replace("__DEFAULT_RENAME_TEMPLATE__", DEFAULT_RENAME_TEMPLATE)
