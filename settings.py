@@ -8,8 +8,9 @@ from typing import Any
 
 CONFIG_PATH = Path.home() / ".abtagger" / "config.json"
 
-# The documented default (see README.md) for how renamed files are laid out.
-DEFAULT_RENAME_TEMPLATE = "{author_last}, {author_first}/[{series}/][{series_num} - ]{title}"
+# The documented default (see README.md): one folder per book, matching the
+# layout Audiobookshelf uses for its book identity.
+DEFAULT_RENAME_TEMPLATE = "{author_last}, {author_first}/[{series}/][{series_num} - ]{title}/{title}"
 
 DEFAULTS = {
     "abs_url": "",

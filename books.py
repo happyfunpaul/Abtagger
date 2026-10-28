@@ -1,17 +1,19 @@
-"""Book-level grouping heuristics.
+"""Book identity: one book is one folder.
 
-One "book" can be several audio files (a multi-part rip, or one file per disc).
-The grouping key is deliberately metadata-first and path-second:
+This deliberately mirrors Audiobookshelf's scanner rather than guessing from
+tags:
 
-1. album + author, inside the same (disc-stripped) folder;
-2. a filename part marker such as ``Book - 03.mp3`` or ``Book (Part 2).mp3``;
-3. normalized title + author, inside the same folder;
-4. the filename stem, then the folder as a last resort.
+1. a folder that directly contains audio files is one book;
+2. an audio file loose in the library root is its own book;
+3. trailing ``CD1`` / ``Disc 2`` subfolders fold into their parent.
 
-All comparisons are normalized, so case and punctuation do not matter.  Folder
-names such as ``CD1`` / ``Disc 2`` are treated as part of their parent so a
-multi-disc book collapses into one row.  Rows that failed to read get a unique
-key so they never disappear inside another book.
+Tags are metadata, not identity.  That means a bad ``album`` tag can no longer
+merge two unrelated books, and a folder holding several standalone files is
+shown the same way ABS shows it.  Rows that failed to read get a unique key so
+they never disappear inside another book.
+
+The title-normalisation helpers below are still used by rename planning and
+duplicate detection; they are no longer part of the grouping key.
 """
 
 from __future__ import annotations
@@ -20,9 +22,9 @@ import os
 import re
 from typing import Any
 
-_DISC_DIR_RE = re.compile(
-    r"^\s*(?:cd|disc|disk|dvd|part|pt|vol(?:ume)?)\s*[-_.]?\s*\d+\s*$", re.I
-)
+# ABS only folds disc-style directories into their parent:
+# /^(cd|dis[ck])\s*\d{1,3}$/i
+_DISC_DIR_RE = re.compile(r"^\s*(?:cd|dis[ck])\s*\d{1,3}\s*$", re.I)
 
 # Leading track/chapter markers: "01 - ", "Chapter 3 ", "Disc 1 - ".
 _PART_PREFIX_RE = re.compile(
@@ -88,7 +90,7 @@ def title_base(title: str) -> str:
 
 
 def group_dir(rel_dir: str) -> str:
-    """Fold trailing ``CD1`` / ``Disc 2`` / ``Part 3`` folders into their parent."""
+    """Fold trailing ``CD1`` / ``Disc 2`` folders into their parent, like ABS."""
     parts = (rel_dir or "").split("/") if rel_dir else []
     while parts and _DISC_DIR_RE.match(parts[-1]):
         parts.pop()
@@ -105,7 +107,7 @@ def _filename_base(name: str) -> tuple[str, bool]:
 
 
 def book_key(rec: dict[str, Any]) -> str:
-    """Stable grouping key for one scanned row."""
+    """Stable grouping key for one scanned row, based on filesystem layout."""
     path = rec.get("path") or ""
     if rec.get("error"):
         # Never merge unreadable files into an editable book.
@@ -116,25 +118,11 @@ def book_key(rec: dict[str, Any]) -> str:
         rel_dir = path.rsplit("/", 1)[0] if "/" in path else ""
     folder = group_dir(str(rel_dir))
 
-    name = rec.get("name") or (path.rsplit("/", 1)[-1] if path else "")
-    author = normalize_author(rec.get("author", "") or "")
-    album = normalize_title(rec.get("album", "") or "")
+    if folder:
+        return _KEY_SEP.join(("folder", folder))
 
-    if album:
-        return _KEY_SEP.join((folder, "album", album, author))
-
-    stem_base, has_part_marker = _filename_base(name)
-    if has_part_marker and stem_base:
-        return _KEY_SEP.join((folder, "file", stem_base, author))
-
-    base = title_base(rec.get("title", "") or "")
-    if base:
-        return _KEY_SEP.join((folder, "title", base, author))
-
-    if stem_base:
-        return _KEY_SEP.join((folder, "file", stem_base, author))
-
-    return _KEY_SEP.join((folder, "folder"))
+    # A loose file in the library root is its own book, exactly like ABS.
+    return _KEY_SEP.join(("file", path))
 
 
 def group_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:

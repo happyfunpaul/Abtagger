@@ -25,6 +25,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 try:
     # keep import side-effect: fail early with a helpful message
@@ -41,7 +42,7 @@ from page import PAGE
 from tags import (  # noqa: F401
     FIELDS, FIELD_SPECS, FIELD_LABELS, EXT_KIND, ITUNES, TONE,
     YEAR_RE, NUM_RE, clean_value, read_mp4, write_mp4, read_mp3, write_mp3,
-    READERS, WRITERS,
+    read_cover, sniff_image_mime, READERS, WRITERS, COVER_READERS,
 )
 from files import locate, read_record  # noqa: F401
 from state import apply_changes, save_undo  # noqa: F401
@@ -71,7 +72,7 @@ def do_delete(items) -> dict:
 
 def do_abs_scan() -> dict:
     st = _state()
-    client = st.abs_client
+    client = _refresh_abs_client()
     if client is None:
         raise ValueError("ABS is not configured (set --abs-url/--abs-token or ~/.abtagger/config.json)")
     lib_id = None
@@ -90,10 +91,24 @@ def do_settings_get() -> dict:
     return settings_mod.load()
 
 
+def _refresh_abs_client():
+    """Re-read ABS config and update the live state.
+
+    The server used to build AbsClient once at startup, so editing config.json
+    (or saving the Settings dialog) left the Scan/Clean buttons disabled until a
+    restart. Refreshing is cheap and makes both paths work immediately.
+    """
+    st = _state()
+    cfg = load_config()
+    st.abs_client = AbsClient(cfg) if (cfg.url and cfg.token) else None
+    return st.abs_client
+
+
 def do_settings_save(data) -> dict:
     if not isinstance(data, dict):
         raise ValueError("bad request")
     settings_mod.save(data)
+    _refresh_abs_client()
     return settings_mod.load()
 
 
@@ -140,7 +155,7 @@ def do_title_from_filename(selected: list[str] | None = None) -> dict:
 
 def do_abs_clean_missing() -> dict:
     st = _state()
-    client = st.abs_client
+    client = _refresh_abs_client()
     if client is None:
         raise ValueError("ABS is not configured")
     lib_id = client.cfg.library_ids[0] if client.cfg.library_ids else client.find_library_for_root(st.root)
@@ -206,11 +221,12 @@ def do_rename_apply(items) -> dict:
             except OSError:
                 pass
     # trigger ABS scan if configured (rename is explicit, so auto-scan is ok)
-    if st.abs_client is not None:
+    client = _refresh_abs_client()
+    if client is not None:
         try:
-            lib_id = st.abs_client.cfg.library_ids[0] if st.abs_client.cfg.library_ids else st.abs_client.find_library_for_root(st.root)
+            lib_id = client.cfg.library_ids[0] if client.cfg.library_ids else client.find_library_for_root(st.root)
             if lib_id:
-                st.abs_client.scan_library(lib_id)
+                client.scan_library(lib_id)
         except Exception:
             pass
     return {"results": results}
@@ -241,7 +257,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy",
                          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                         "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+                         "img-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'none'; "
+                         "base-uri 'none'; form-action 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -282,6 +299,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 return
             st = self._state()
+            client = _refresh_abs_client()
             try:
                 with st.lock:
                     rows = scan(st.root)
@@ -290,7 +308,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": "scan failed: " + str(e)})
                 return
             self._json(200, {"root": str(st.root), "rows": rows, "read_only": st.read_only,
-                            "abs_configured": st.abs_client is not None})
+                            "abs_configured": client is not None})
+        elif path == "/api/cover":
+            if not self._authed():
+                return
+            rel = (parse_qs(urlparse(self.path).query).get("path") or [""])[0]
+            st = self._state()
+            try:
+                with st.lock:
+                    file_path = locate(st.root, rel)
+                    cover = read_cover(file_path)
+            except (ValueError, OSError) as e:
+                self._json(400, {"error": str(e)})
+                return
+            except Exception as e:
+                self.log_error("cover read failed: %r", e)
+                self._json(500, {"error": "could not read cover: " + str(e)})
+                return
+            if not cover:
+                self._json(404, {"error": "no embedded cover"})
+                return
+            data, mime = cover
+            self._send(200, data, mime)
         else:
             self._json(404, {"error": "not found"})
 
