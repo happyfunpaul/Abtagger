@@ -4,89 +4,85 @@ import books
 
 
 def row(name, **kw):
-    rec = {"path": (kw.pop("dir", "") + "/" + name).lstrip("/"), "dir": kw.pop("dir", ""),
+    d = kw.pop("dir", "")
+    rec = {"path": (d + "/" + name).lstrip("/"), "dir": d,
            "name": name, "title": "", "album": "", "author": "", "error": ""}
     rec.update(kw)
     return rec
 
 
 class TestTitleBase(unittest.TestCase):
-    def test_strips_prefix(self):
-        self.assertEqual(books.title_base("01 - The Way of Kings"), "the way of kings")
-        self.assertEqual(books.title_base("Chapter 3 - The Way of Kings"), "the way of kings")
-
-    def test_strips_suffix(self):
-        self.assertEqual(books.title_base("The Way of Kings - 03"), "the way of kings")
-        self.assertEqual(books.title_base("The Way of Kings (Part 2)"), "the way of kings")
-
-    def test_part_only_title_is_empty(self):
-        self.assertEqual(books.title_base("Chapter 3"), "")
-        self.assertEqual(books.title_base("02"), "")
-
-    def test_hyphenated_number_is_kept(self):
-        self.assertEqual(books.title_base("Catch-22"), "catch 22")
+    def test_title_base(self):
+        cases = [
+            ("01 - The Way of Kings", "the way of kings"),
+            ("Chapter 3 - The Way of Kings", "the way of kings"),
+            ("The Way of Kings - 03", "the way of kings"),
+            ("The Way of Kings (Part 2)", "the way of kings"),
+            ("Chapter 3", ""),
+            ("02", ""),
+            ("Catch-22", "catch 22"),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(books.title_base(text), expected)
 
 
 class TestGroupDir(unittest.TestCase):
-    def test_disc_folders_fold_into_parent(self):
-        self.assertEqual(books.group_dir("Author/Book/CD1"), "Author/Book")
-        self.assertEqual(books.group_dir("Author/Book/Disc 2"), "Author/Book")
-        self.assertEqual(books.group_dir("Author/Book/Part_3"), "Author/Book")
-
-    def test_normal_folder_kept(self):
-        self.assertEqual(books.group_dir("Author/Book"), "Author/Book")
+    def test_group_dir(self):
+        cases = [
+            # ABS folds CD/Disc folders into their parent...
+            ("Author/Book/CD1", "Author/Book"),
+            ("Author/Book/Disc 2", "Author/Book"),
+            ("Author/Book/disk 10", "Author/Book"),
+            # ...but other subfolders are their own library items.
+            ("Author/Book/Part_3", "Author/Book/Part_3"),
+            ("Author/Book/Volume 2", "Author/Book/Volume 2"),
+            ("Author/Book", "Author/Book"),
+        ]
+        for rel_dir, expected in cases:
+            with self.subTest(rel_dir=rel_dir):
+                self.assertEqual(books.group_dir(rel_dir), expected)
 
 
 class TestBookKey(unittest.TestCase):
-    def test_album_groups_chapters(self):
-        rows = [
-            row("Christmas_Carol_01.mp3", dir="Dickens", title="Preface and Stave 1",
-                album="A Christmas Carol", author="Charles Dickens"),
-            row("Christmas_Carol_02.mp3", dir="Dickens", title="Stave 2",
-                album="A Christmas Carol", author="Charles Dickens"),
+    def test_folder_identity(self):
+        cases = [
+            ("same folder ignores tags", [
+                row("a.mp3", dir="Author/Book", title="Chapter 1", album="Book", author="A"),
+                row("b.mp3", dir="Author/Book", title="Chapter 2", album="Different", author="B"),
+            ], True),
+            ("loose root files are separate books", [
+                row("a.m4b", title="Book A", album="Book A", author="A"),
+                row("b.m4b", title="Book B", album="Book B", author="A"),
+            ], False),
+            ("different folders are separate books", [
+                row("a.m4b", dir="Author/Book A", title="A", album="Same", author="A"),
+                row("b.m4b", dir="Author/Book B", title="B", album="Same", author="A"),
+            ], False),
+            ("disc folders share a book", [
+                row("01.mp3", dir="Book/CD1", title="Chapter 1", album="Book", author="A"),
+                row("01.mp3", dir="Book/Disc 2", title="Chapter 1", album="Book", author="A"),
+            ], True),
         ]
-        self.assertEqual(books.book_key(rows[0]), books.book_key(rows[1]))
+        for name, rows, same in cases:
+            with self.subTest(name=name):
+                left, right = books.book_key(rows[0]), books.book_key(rows[1])
+                if same:
+                    self.assertEqual(left, right)
+                else:
+                    self.assertNotEqual(left, right)
 
-    def test_disc_folders_share_a_book(self):
-        rows = [
-            row("01.mp3", dir="Book/CD1", title="Chapter 1", album="Book", author="A"),
-            row("01.mp3", dir="Book/Disc 2", title="Chapter 1", album="Book", author="A"),
-        ]
-        self.assertEqual(books.book_key(rows[0]), books.book_key(rows[1]))
-
-    def test_part_filenames_group_without_album(self):
-        rows = [
-            row("Book - 01.mp3", dir="A", title="", author="A"),
-            row("Book - 02.mp3", dir="A", title="", author="A"),
-        ]
-        self.assertEqual(books.book_key(rows[0]), books.book_key(rows[1]))
-
-    def test_different_albums_do_not_group(self):
-        rows = [
-            row("a.mp3", dir="flat", title="A", album="Book A", author="A"),
-            row("b.mp3", dir="flat", title="B", album="Book B", author="A"),
-        ]
-        self.assertNotEqual(books.book_key(rows[0]), books.book_key(rows[1]))
-
-    def test_same_title_and_author_group(self):
-        rows = [
-            row("a.mp3", dir="A", title="The Book", author="Author"),
-            row("b.mp3", dir="A", title="The Book", author="Author"),
-        ]
-        self.assertEqual(books.book_key(rows[0]), books.book_key(rows[1]))
-
-    def test_unreadable_files_never_group(self):
-        rows = [
+    def test_errors_never_group(self):
+        errors = [
             row("a.mp3", dir="A", title="x", album="Same", error="boom"),
             row("b.mp3", dir="A", title="x", album="Same", error="boom"),
         ]
-        self.assertNotEqual(books.book_key(rows[0]), books.book_key(rows[1]))
+        self.assertNotEqual(books.book_key(errors[0]), books.book_key(errors[1]))
 
-    def test_group_rows_skips_errors(self):
         rows = [
-            row("a.mp3", title="x", album="Same"),
-            row("b.mp3", title="x", album="Same"),
-            row("c.mp3", title="x", album="Same", error="boom"),
+            row("a.mp3", dir="A", title="x", album="Same"),
+            row("b.mp3", dir="A", title="y", album="Other"),
+            row("c.mp3", dir="A", title="x", album="Same", error="boom"),
         ]
         groups = books.group_rows(rows)
         self.assertEqual(len(groups), 1)

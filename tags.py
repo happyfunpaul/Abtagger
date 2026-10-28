@@ -11,7 +11,7 @@ try:
     from mutagen.id3 import (ID3, ID3NoHeaderError, MVIN, MVNM, TALB, TCOM,
                              TCON, TDRC, TIT2, TIT3, TPE1, TXXX)
     from mutagen.mp3 import MP3
-    from mutagen.mp4 import MP4, AtomDataType, MP4FreeForm
+    from mutagen.mp4 import MP4, AtomDataType, MP4Cover, MP4FreeForm
 except ImportError:  # pragma: no cover
     raise
 
@@ -121,10 +121,12 @@ def read_mp4(path: Path) -> dict[str, Any]:
         "author": _mp4_text(t, "\xa9ART"),
         "narrator": (_mp4_text(t, "\xa9wrt") or _mp4_text(t, ITUNES + "NARRATOR")
                      or _mp4_text(t, TONE + "NARRATOR")),
+        # Audible/Soundbooth files sometimes put the series in the custom
+        # SRNM/SRSQ atoms instead of the standard ones (DCC #7 does this).
         "series": (_mp4_text(t, ITUNES + "SERIES") or _mp4_text(t, "\xa9mvn")
-                   or _mp4_text(t, TONE + "SERIES")),
+                   or _mp4_text(t, TONE + "SERIES") or _mp4_text(t, "SRNM")),
         "series_num": (_mp4_text(t, ITUNES + "SERIES-PART") or _mp4_text(t, "\xa9mvi")
-                       or _mp4_text(t, TONE + "SERIES_PART")),
+                       or _mp4_text(t, TONE + "SERIES_PART") or _mp4_text(t, "SRSQ")),
         "year": _mp4_text(t, "\xa9day"),
         "genre": _mp4_text(t, "\xa9gen"),
         "duration": round(float(f.info.length or 0), 1),
@@ -182,6 +184,8 @@ def write_mp4(path: Path, ch: dict[str, str]) -> None:
         put("\xa9mvn", ch["series"])
         if TONE + "SERIES" in t:
             put_ff(TONE + "SERIES", ch["series"])
+        if "SRNM" in t:
+            put("SRNM", ch["series"])
     if "series_num" in ch:
         v = ch["series_num"]
         put_ff(ITUNES + "SERIES-PART", v)
@@ -191,6 +195,8 @@ def write_mp4(path: Path, ch: dict[str, str]) -> None:
             del t["\xa9mvi"]
         if TONE + "SERIES_PART" in t:
             put_ff(TONE + "SERIES_PART", v)
+        if "SRSQ" in t:
+            put("SRSQ", v)
     if "year" in ch:
         put("\xa9day", ch["year"])
     if "genre" in ch:
@@ -209,7 +215,8 @@ def read_mp3(path: Path) -> dict[str, Any]:
     txxx = {fr.desc.upper(): str(fr.text[0]).strip() for fr in t.getall("TXXX") if fr.text}
     return {
         "title": one("TIT2"),
-        "album": one("TALB"),
+        # ABS displays album, falling back to title, as its book Title.
+        "album": one("TALB") or one("TIT2"),
         "subtitle": one("TIT3") or txxx.get("SUBTITLE", ""),
         "author": one("TPE1"),
         "narrator": one("TCOM") or txxx.get("NARRATOR", ""),
@@ -266,5 +273,66 @@ def write_mp3(path: Path, ch: dict[str, str]) -> None:
     t.save(str(path), v2_version=ver)
 
 
+def sniff_image_mime(data: bytes) -> str:
+    """Best-effort MIME type for embedded cover bytes."""
+    if not data:
+        return "application/octet-stream"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"BM"):
+        return "image/bmp"
+    return "application/octet-stream"
+
+
+def read_cover_mp4(path: Path) -> tuple[bytes, str] | None:
+    """Return (image bytes, mime type) for an MP4/M4B's ``covr`` atom, or None."""
+    f = MP4(str(path))
+    covr = f.tags.get("covr") if f.tags is not None else None
+    if not covr:
+        return None
+    cover = covr[0]
+    data = bytes(cover)
+    if not data:
+        return None
+    fmt = getattr(cover, "imageformat", None)
+    if fmt == MP4Cover.FORMAT_PNG:
+        return data, "image/png"
+    if fmt == MP4Cover.FORMAT_JPEG:
+        return data, "image/jpeg"
+    return data, sniff_image_mime(data)
+
+
+def read_cover_mp3(path: Path) -> tuple[bytes, str] | None:
+    """Return (image bytes, mime type) for an MP3's front APIC frame, or None."""
+    f = MP3(str(path))
+    if f.tags is None:
+        return None
+    pics = f.tags.getall("APIC")
+    if not pics:
+        return None
+    # Prefer the official front cover (APIC type 3); fall back to the first.
+    pic = next((p for p in pics if getattr(p, "type", None) == 3), pics[0])
+    data = bytes(pic.data)
+    if not data:
+        return None
+    mime = getattr(pic, "mime", "") or ""
+    if not mime.startswith("image/"):
+        mime = sniff_image_mime(data)
+    return data, mime
+
+
+def read_cover(path: Path) -> tuple[bytes, str] | None:
+    """Read embedded cover art for a supported audio file."""
+    reader = COVER_READERS.get(EXT_KIND.get(path.suffix.lower()))
+    return reader(path) if reader is not None else None
+
+
 READERS = {"mp4": read_mp4, "mp3": read_mp3}
 WRITERS = {"mp4": write_mp4, "mp3": write_mp3}
+COVER_READERS = {"mp4": read_cover_mp4, "mp3": read_cover_mp3}

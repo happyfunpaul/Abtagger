@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from books import book_key, group_rows, normalize_author, normalize_title  # noqa: F401
+from books import group_rows, normalize_author, normalize_title
 
 ILLEGAL = '<>:"/\\|?*'
 RESERVED = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
@@ -163,67 +163,116 @@ def rename_normalize_title(t: str) -> str:
     return normalize_title(t)
 
 
-def _part_suffix(original: str, index: int, total: int) -> str:
-    # try to extract a trailing number from the original stem
-    stem = os.path.splitext(original)[0]
-    m = re.search(r"(\d+)\s*$", stem)
-    if m and total > 1:
-        return m.group(1)
-    if total > 1:
-        return str(index)
-    return ""
+def _natkey(s: str):
+    """Natural sort key so ``book 2`` sorts before ``book 10``."""
+    return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", s)]
+
+
+# Explicit part markers in a title or filename. Deliberately excludes "book N":
+# that is usually the book number, not the part number.
+_PART_WORD_RE = re.compile(
+    r"\b(?:part|pt|disc|disk|cd|track|chapter|ch|volume|vol)\s*[-_.:]?\s*(\d{1,4})\b",
+    re.I,
+)
+
+
+def _part_number(rec: dict[str, Any], original: str, index: int) -> int:
+    """Best guess at this file's part ordinal within a multi-file book."""
+    stem = os.path.splitext(original or "")[0]
+    # Prefer explicit markers such as "Part 2" in the track title or filename.
+    for text in (str(rec.get("title") or ""), stem):
+        m = _PART_WORD_RE.search(text)
+        if m:
+            return int(m.group(1))
+    m = re.search(r"\((\d{1,3})\)\s*$", stem)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"[-_.]\s*(\d{1,4})\s*$", stem)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(\d{1,4})\s*$", stem)
+    if m:
+        return int(m.group(1))
+    return index
+
+
+def _ends_with_part(stem: str, part: int) -> bool:
+    """True when ``stem`` already ends with this part number."""
+    return bool(re.search(rf"(?:^|[^0-9])0*{part}\s*$", stem))
+
+
+def _split_dst(dst: str) -> tuple[str, str]:
+    if "/" in dst:
+        folder, name = dst.rsplit("/", 1)
+        return folder, name
+    return "", dst
 
 
 def build_rename_plan(root: Path, rows: list[dict[str, Any]], template: str,
                       selected: set[str] | None = None, group_books: bool = True) -> list[RenamePlan]:
+    """Build a deterministic rename plan.
+
+    Part numbers are applied only to files that resolve to the *same*
+    destination file, i.e. records that really are parts of one book.  A folder
+    that happens to hold several standalone books (an old ``Author/Series``
+    layout) must not gain spurious ``- 1`` / ``- 2`` suffixes.
+    """
     groups = group_rows(rows)
-    # determine which book groups are touched
-    touched_groups: set[tuple] = set()
     selected_paths = selected if selected is not None else {r["path"] for r in rows if not r.get("error")}
-    for r in rows:
-        if r.get("error") or r["path"] not in selected_paths:
+
+    work: dict[str, dict[str, Any]] = {}
+    for gk in sorted(groups):
+        grp = [r for r in groups[gk] if not r.get("error")]
+        if not grp or not any(r["path"] in selected_paths for r in grp):
             continue
-        touched_groups.add(book_key(r))
+        if group_books:
+            # Move every file of a multi-file book together.
+            use = grp
+        else:
+            use = [r for r in grp if r["path"] in selected_paths]
+        for r in use:
+            work[r["path"]] = r
+
+    raw: list[tuple[dict[str, Any], str, str]] = []
+    for path in sorted(work, key=_natkey):
+        r = work[path]
+        original = r.get("name") or path.rsplit("/", 1)[-1]
+        dst_rel = render_template(template, r, original)
+        if not dst_rel or dst_rel == path:
+            continue
+        # ensure extension preserved if template omitted ext
+        last = dst_rel.rsplit("/", 1)[-1]
+        if "." not in last and "." in original:
+            dst_rel += os.path.splitext(original)[1]
+        if dst_rel == path:
+            continue  # already in the target layout (idempotent re-runs)
+        raw.append((r, dst_rel, original))
+
+    # Group by destination file first. Only real collisions/parts are numbered.
+    by_dst: dict[str, list[tuple[dict[str, Any], str, str]]] = {}
+    for item in raw:
+        by_dst.setdefault(item[1].casefold(), []).append(item)
 
     plans: list[RenamePlan] = []
-    seen_src: set[str] = set()
-    for gk in touched_groups:
-        grp = sorted(groups.get(gk, []), key=lambda r: r["path"])
-        # if grouping disabled, treat each file independently
-        if not group_books or len(grp) == 1:
-            grp = [r for r in grp if r["path"] in selected_paths]
-        else:
-            # include all siblings of the selected files in this group
-            grp = [r for r in grp if r["path"] in selected_paths or True]
-            # but only if at least one selected
-            if not any(r["path"] in selected_paths for r in grp):
-                continue
-        total = len(grp)
-        for idx, r in enumerate(grp, start=1):
-            if r["path"] in seen_src:
-                continue
-            seen_src.add(r["path"])
-            original = r.get("name") or r["path"].rsplit("/", 1)[-1]
-            dst_rel = render_template(template, r, original)
-            if not dst_rel or dst_rel == r["path"]:
-                continue
-            # ensure extension preserved if template omitted ext
-            last = dst_rel.rsplit("/", 1)[-1]
-            if "." not in last and "." in original:
-                dst_rel = dst_rel + os.path.splitext(original)[1]
-            # multi-file: ensure unique filename by appending part suffix if needed
-            if total > 1:
-                # insert part number before extension if not already present
-                if "/" in dst_rel:
-                    folder, fname = dst_rel.rsplit("/", 1)
-                else:
-                    folder, fname = "", dst_rel
-                stem, ext = os.path.splitext(fname)
-                part = _part_suffix(original, idx, total)
-                if part and part not in stem:
-                    fname = f"{stem} - {part}{ext}"
-                dst_rel = f"{folder}/{fname}" if folder else fname
+    for key in sorted(by_dst):
+        items = by_dst[key]
+        if len(items) == 1:
+            r, dst_rel, _ = items[0]
             plans.append(RenamePlan(src=r["path"], dst=dst_rel))
+            continue
+        ordered = sorted(items, key=lambda x: _natkey(x[0]["path"]))
+        for idx, (r, dst_rel, original) in enumerate(ordered, start=1):
+            folder, fname = _split_dst(dst_rel)
+            stem, ext = os.path.splitext(fname)
+            part = _part_number(r, original, idx)
+            if not _ends_with_part(stem, part):
+                stem = f"{stem} - {part}"
+            dst_rel = f"{folder}/{stem}{ext}" if folder else f"{stem}{ext}"
+            if dst_rel == r["path"]:
+                continue  # already in the target layout
+            plans.append(RenamePlan(src=r["path"], dst=dst_rel))
+
+    plans.sort(key=lambda p: _natkey(p.src))
     return plans
 
 

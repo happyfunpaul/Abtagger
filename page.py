@@ -64,6 +64,15 @@ tr.book td.path .bookline .expander,tr.book td.path .bookline .badge{flex:0 0 au
 tr.child td.path{padding-left:2.6rem;position:relative}
 tr.child td.path::before{content:"↳";position:absolute;left:1.05rem;color:var(--dim)}
 tr.child td.path .dir{display:none}
+.coverbtn{border:0;background:transparent;padding:0;color:var(--accent);text-decoration:underline;font:inherit;font-size:13px;cursor:zoom-in;border-radius:0}
+.coverbtn:hover:not(:disabled){background:transparent;text-decoration:none}
+tbody tr.cursor:not(.sel) td{background:var(--hover)}
+tbody tr.cursor td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+#covermodal{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:12;display:none;align-items:center;justify-content:center;padding:24px}
+#covermodal .coverbox{display:flex;flex-direction:column;gap:10px;align-items:center;max-height:100%}
+#coverimg{max-width:min(80vw,34rem);max-height:72vh;object-fit:contain;background:#fff;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+#covertitle,#coverstatus{color:#fff;font-size:13px;text-align:center;max-width:80vw}
+#coverstatus{color:#c9c9c2}
 .busy .wrap{pointer-events:none;opacity:.6}
 @media (max-width:700px){header .title #root{display:none}}
 </style>
@@ -116,13 +125,16 @@ tr.child td.path .dir{display:none}
     <h3 style="margin:0 0 8px">Rename template language</h3>
     <p>Placeholders in <code>{ }</code> are replaced with the tag value. Wrap optional parts in <code>[ ]</code>: a bracket is emitted only if every placeholder inside it is non-empty.</p>
     <p><strong>Fields:</strong> {title} (book title), {subtitle}, {track_title} (per-file title), {album} (alias for book title), {author}, {author_first}, {author_last}, {narrator}, {series}, {series_num}, {year}, {genre}, {filename}, {stem}, {ext}</p>
-    <p>In the grid, the <strong>Title</strong> column shows the book title in book rows and the per-file track title in expanded/file rows.</p>
+    <p>In the grid, the <strong>Title</strong> column is the book title (the value ABS shows) in both views. When a multi-file book is expanded, its child rows show each file's track title in that same column.</p>
     <p><strong>Examples:</strong></p>
     <pre style="background:var(--bg);padding:8px;border-radius:4px;overflow:auto">{author_last}, {author_first}/[{series}/][{series_num} - ]{title}</pre>
     <p>Standalone book (no series) becomes <code>James, Aaron/Assholes.m4b</code>; a series book becomes <code>James, Aaron/Stormlight Archive/1 - The Way of Kings.m4b</code>.</p>
     <pre style="background:var(--bg);padding:8px;border-radius:4px;overflow:auto">{author_last}, {author_first}/[{series}/][{series_num} - ]{title}/{title}</pre>
     <p>Adds a folder per book (last component is the filename).</p>
     <p>Use <code>/</code> to create folders. Illegal filename characters are sanitized.</p>
+    <h3 style="margin:14px 0 8px">Keyboard</h3>
+    <p><strong>↑ / ↓</strong> move the row cursor · <strong>Home / End</strong> jump to the first/last row · <strong>X</strong> or <strong>Space</strong> select · <strong>Enter</strong> edit the row's first field · <strong>← / →</strong> collapse/expand a book · <strong>Ctrl+S</strong> save.</p>
+    <p>While typing in a cell, <strong>↑ / ↓</strong> or <strong>Enter / Shift+Enter</strong> move between rows in the same column, and <strong>Esc</strong> reverts the cell.</p>
     <div style="display:flex;justify-content:flex-end"><button id="h_close" type="button">Close</button></div>
   </div>
 </div>
@@ -140,6 +152,14 @@ tr.child td.path .dir{display:none}
     </div>
   </div>
 </div>
+<div id="covermodal" role="dialog" aria-modal="true" aria-label="Cover art">
+  <div class="coverbox">
+    <img id="coverimg" alt="" hidden>
+    <div id="coverstatus">Loading cover...</div>
+    <div id="covertitle"></div>
+    <button id="coverclose" type="button">Close</button>
+  </div>
+</div>
 <div class="wrap">
 <table id="grid">
   <thead><tr id="head"></tr></thead>
@@ -150,8 +170,8 @@ tr.child td.path .dir{display:none}
 (() => {
 "use strict";
 const COLS = [
-  {key:"title", label:"Title", w:240, bookField:"album", fileField:"title",
-   hint:"Book title in book rows; per-file track title in expanded/file rows"},
+  {key:"title", label:"Title", w:240, bookField:"album",
+   hint:"Book title (what ABS shows). Expanded child rows of a multi-file book show the per-file track title."},
   {key:"subtitle", label:"Subtitle", w:180},
   {key:"author", label:"Author", w:170},
   {key:"narrator", label:"Narrator", w:150},
@@ -178,7 +198,7 @@ const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base
 const DEFAULT_TEMPLATE = "__DEFAULT_RENAME_TEMPLATE__";
 const S = {rows: [], vis: [], books: [], visBooks: [], sortKey: "path", sortDir: 1,
            filter: "", last: null, lastBook: null, readOnly: false, busy: false,
-           view: "books", expanded: new Set()};
+           view: "books", expanded: new Set(), cursor: null};
 try {
   const storedView = localStorage.getItem("abtagger-view");
   if (storedView === "files" || storedView === "books") S.view = storedView;
@@ -208,6 +228,16 @@ async function api(path, body) {
   try { data = await r.json(); } catch (e) { /* non-JSON error body */ }
   if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
   return data;
+}
+
+async function apiBlob(path) {
+  const r = await fetch(path, {headers: {"X-Token": token}, cache: "no-store"});
+  if (!r.ok) {
+    let data = {};
+    try { data = await r.json(); } catch (e) { /* non-JSON error body */ }
+    throw new Error(data.error || ("HTTP " + r.status));
+  }
+  return r.blob();
 }
 
 function status(msg, kind) {
@@ -372,7 +402,9 @@ function visible() {
   let rows = S.rows;
   if (q) rows = rows.filter(r => (r.rec.path + "\n" + FIELDS.map(f => r.cur[f]).join("\n")).toLowerCase().includes(q));
   const k = S.sortKey, d = S.sortDir;
-  const val = (r) => k === "path" ? r.rec.path : (k === "duration" ? r.rec.duration : r.cur[k]);
+  // File view's Title column shows the book title (album), so sort by that.
+  const field = k === "title" ? "album" : k;
+  const val = (r) => k === "path" ? r.rec.path : (k === "duration" ? r.rec.duration : r.cur[field]);
   return rows.slice().sort((a, b) => {
     const x = val(a), y = val(b);
     if (typeof x === "number") return (x - y) * d || collator.compare(a.rec.path, b.rec.path);
@@ -458,13 +490,15 @@ function rowEl(r, i, child) {
   tr.appendChild(cp);
 
   COLS.forEach(c => {
-    const f = c.fileField || c.key;
+    // File view shows the ABS book title; expanded child rows of a multi-file
+    // book show that file's track title in the same column.
+    const f = c.key === "title" ? (child ? "title" : "album") : c.key;
     const cell = td();
     const inp = document.createElement("input");
     inp.type = "text"; inp.value = r.cur[f]; inp.dataset.f = f;
     inp.spellcheck = false; inp.autocomplete = "off";
     inp.disabled = !!r.rec.error || S.readOnly;
-    inp.setAttribute("aria-label", c.label + ": " + r.rec.name);
+    inp.setAttribute("aria-label", (c.key === "title" && child ? "Track title" : c.label) + ": " + r.rec.name);
     if (isDirtyField(r, f)) cell.classList.add("dirty");
     if (isDirtyField(r, f) && problem(f, r.cur[f])) { cell.classList.add("invalid"); cell.title = problem(f, r.cur[f]); }
     cell.appendChild(inp);
@@ -473,7 +507,17 @@ function rowEl(r, i, child) {
 
   const len = td("info"); len.textContent = fmtDur(r.rec.duration); tr.appendChild(len);
   const chp = td("info"); chp.textContent = r.rec.chapters ? String(r.rec.chapters) : "–"; tr.appendChild(chp);
-  const cov = td("info"); cov.textContent = r.rec.cover ? "yes" : "–"; tr.appendChild(cov);
+  const cov = td("info");
+  if (r.rec.cover) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "coverbtn"; b.dataset.act = "cover"; b.textContent = "yes";
+    b.title = "Show embedded cover";
+    b.setAttribute("aria-label", "Show cover for " + r.rec.name);
+    cov.appendChild(b);
+  } else {
+    cov.textContent = "–";
+  }
+  tr.appendChild(cov);
   return tr;
 }
 
@@ -564,7 +608,16 @@ function bookEl(book, i) {
   chp.textContent = chapters ? String(chapters) : "–";
   tr.appendChild(chp);
   const cov = td("info");
-  cov.textContent = book.rows.some(r => r.rec.cover) ? "yes" : "–";
+  const coverRow = book.rows.find(r => r.rec.cover);
+  if (coverRow) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "coverbtn"; b.dataset.act = "cover"; b.textContent = "yes";
+    b.title = "Show embedded cover";
+    b.setAttribute("aria-label", "Show cover for book " + bookTitle(book));
+    cov.appendChild(b);
+  } else {
+    cov.textContent = "–";
+  }
   tr.appendChild(cov);
   return tr;
 }
@@ -591,6 +644,7 @@ function render() {
     S.vis.forEach((r, i) => frag.appendChild(rowEl(r, i)));
   }
   tb.appendChild(frag);
+  syncCursor();
   updateHead();
   updateCounts();
 }
@@ -650,6 +704,146 @@ function refreshRowCells(tr) {
   });
 }
 
+/* ---------- cover preview ---------- */
+let coverURL = null, coverSeq = 0, coverReturn = null;
+
+function showCover(rows, title, trigger) {
+  const row = rows.find(r => r.rec.cover);
+  if (!row) return;
+  const seq = ++coverSeq;
+  const modal = $("covermodal"), img = $("coverimg"), statusEl = $("coverstatus");
+  coverReturn = trigger || document.activeElement;
+  $("covertitle").textContent = title || row.rec.name;
+  statusEl.textContent = "Loading cover...";
+  statusEl.style.display = "";
+  img.hidden = true;
+  modal.style.display = "flex";
+  $("coverclose").focus();
+  apiBlob("/api/cover?path=" + encodeURIComponent(row.rec.path)).then(blob => {
+    if (seq !== coverSeq) return;
+    if (coverURL) URL.revokeObjectURL(coverURL);
+    coverURL = URL.createObjectURL(blob);
+    img.src = coverURL;
+    img.alt = "Cover of " + (title || row.rec.name);
+    img.hidden = false;
+    statusEl.style.display = "none";
+  }).catch(err => {
+    if (seq !== coverSeq) return;
+    hideCover();
+    status("Could not load cover: " + err.message, "bad");
+  });
+}
+
+function hideCover() {
+  coverSeq++;
+  if (coverURL) { URL.revokeObjectURL(coverURL); coverURL = null; }
+  const img = $("coverimg");
+  if (img) { img.removeAttribute("src"); img.hidden = true; }
+  $("covermodal").style.display = "none";
+  if (coverReturn && document.contains(coverReturn)) {
+    try { coverReturn.focus({preventScroll: true}); } catch (e) { coverReturn.focus(); }
+  }
+  coverReturn = null;
+}
+
+/* ---------- keyboard row cursor ---------- */
+function tableRows() { return [...tbody().rows]; }
+
+function findCursorRow(rows) {
+  rows = rows || tableRows();
+  const c = S.cursor;
+  if (c) {
+    if (c.rowPath) {
+      const tr = rows.find(x => x._row && x._row.rec.path === c.rowPath);
+      if (tr) return tr;
+    }
+    if (c.bookId) {
+      const tr = rows.find(x => x._book && x._book.id === c.bookId);
+      if (tr) return tr;
+    }
+  }
+  return rows.find(x => x.classList.contains("cursor")) || null;
+}
+
+function setCursor(tr, opts) {
+  if (!tr || !tbody().contains(tr)) return;
+  tbody().querySelectorAll("tr.cursor").forEach(x => x.classList.remove("cursor"));
+  tr.classList.add("cursor");
+  S.cursor = tr._book ? {bookId: tr._book.id} : (tr._row ? {rowPath: tr._row.rec.path} : null);
+  if (!(opts && opts.noScroll)) {
+    try { tr.scrollIntoView({block: "nearest"}); } catch (e) { /* older browsers */ }
+  }
+}
+
+function syncCursor() {
+  const rows = tableRows();
+  if (!rows.length) return;
+  const tr = findCursorRow(rows);
+  if (tr) tr.classList.add("cursor");
+}
+
+function moveCursor(step) {
+  const rows = tableRows();
+  if (!rows.length) return;
+  const tr = findCursorRow(rows);
+  let i = tr ? rows.indexOf(tr) : -1;
+  if (i < 0) i = step > 0 ? -1 : 0;
+  const j = Math.max(0, Math.min(rows.length - 1, i + step));
+  setCursor(rows[j]);
+}
+
+function cursorTo(where) {
+  const rows = tableRows();
+  if (!rows.length) return;
+  setCursor(where === "end" ? rows[rows.length - 1] : rows[0]);
+}
+
+function toggleCursorSelection() {
+  let tr = findCursorRow();
+  if (!tr) {
+    const rows = tableRows();
+    if (!rows.length) return;
+    tr = rows[0];
+  }
+  if (tr._book) {
+    const book = tr._book;
+    const selectable = book.rows.filter(r => !r.rec.error);
+    const on = !(selectable.length > 0 && selectable.every(r => r.sel));
+    book.rows.forEach(r => { if (!r.rec.error) r.sel = on; });
+    S.lastBook = S.visBooks.indexOf(book);
+    S.last = null;
+  } else if (tr._row) {
+    const r = tr._row;
+    if (r.rec.error) return;
+    r.sel = !r.sel;
+    S.last = S.view === "files" ? S.vis.indexOf(r) : null;
+    if (S.view === "books") S.lastBook = null;
+  } else {
+    return;
+  }
+  render();
+}
+
+function editCursor() {
+  const tr = findCursorRow();
+  if (!tr) return;
+  const inp = tr.querySelector('input[type="text"]:not(:disabled)');
+  if (inp) { inp.focus(); inp.select(); }
+}
+
+function expandCursor(open) {
+  const tr = findCursorRow();
+  if (!tr || !tr._book) return false;
+  const book = tr._book;
+  if (book.count < 2) return false;
+  const isOpen = S.expanded.has(book.id);
+  if (isOpen === open) return true;
+  if (open) S.expanded.add(book.id); else S.expanded.delete(book.id);
+  book.expanded = open;
+  render();
+  return true;
+}
+
 function wireTable() {
   const tb = tbody();
   tb.addEventListener("input", (e) => {
@@ -696,6 +890,15 @@ function wireTable() {
     }
   });
   tb.addEventListener("click", (e) => {
+    const tr0 = e.target.closest && e.target.closest("tr");
+    if (tr0 && tb.contains(tr0)) setCursor(tr0, {noScroll: true});
+    const cv = e.target.closest && e.target.closest('button[data-act="cover"]');
+    if (cv) {
+      const tr = cv.closest("tr");
+      if (tr._book) showCover(tr._book.rows, bookTitle(tr._book), cv);
+      else if (tr._row) showCover([tr._row], tr._row.rec.name, cv);
+      return;
+    }
     const ex = e.target.closest && e.target.closest('button[data-act="expand"]');
     if (ex) {
       const book = ex.closest("tr")._book;
@@ -747,6 +950,10 @@ function wireTable() {
     updateHead();
     updateCounts();
   });
+  tb.addEventListener("focusin", (e) => {
+    const tr = e.target.closest && e.target.closest("tr");
+    if (tr && tb.contains(tr)) setCursor(tr, {noScroll: true});
+  });
   $("head").addEventListener("click", (e) => {
     if (e.target.id === "selall") {
       const on = e.target.checked;
@@ -764,6 +971,51 @@ function wireTable() {
     if ((e.key === "Enter" || e.key === " ") && e.target.matches("th[data-k]")) { e.preventDefault(); e.target.click(); }
   });
 }
+
+/* ---------- keyboard shortcuts (grid level) ---------- */
+document.addEventListener("keydown", (e) => {
+  const coverOpen = getComputedStyle($("covermodal")).display !== "none";
+  if (coverOpen) {
+    if (e.key === "Escape") { e.preventDefault(); hideCover(); }
+    return;
+  }
+  if (e.defaultPrevented) return;
+  if (e.ctrlKey || e.metaKey) {
+    if ((e.key === "s" || e.key === "S") && !$("save").disabled) { e.preventDefault(); save(); }
+    return;
+  }
+  if (e.altKey) return;
+  if ($("modal").style.display !== "none" || $("helpmodal").style.display !== "none") return;
+  const t = e.target;
+  if (!t || !t.closest) return;
+  if (t.closest('a,input:not([type="checkbox"]),textarea,select,[contenteditable="true"]')) return;
+  switch (e.key) {
+    case "ArrowDown": e.preventDefault(); moveCursor(1); break;
+    case "ArrowUp": e.preventDefault(); moveCursor(-1); break;
+    case "Home": e.preventDefault(); cursorTo("start"); break;
+    case "End": e.preventDefault(); cursorTo("end"); break;
+    case "x": case "X":
+      e.preventDefault(); toggleCursorSelection(); break;
+    case " ":
+      if (!(t instanceof HTMLInputElement) && !t.closest("button")) {
+        e.preventDefault(); toggleCursorSelection();
+      }
+      break;
+    case "Enter":
+      if (t.closest("button")) break;  // let buttons activate normally
+      e.preventDefault(); editCursor(); break;
+    case "ArrowRight":
+      if (expandCursor(true)) e.preventDefault();
+      break;
+    case "ArrowLeft":
+      if (expandCursor(false)) e.preventDefault();
+      break;
+    case "Escape":
+      tbody().querySelectorAll("tr.cursor").forEach(x => x.classList.remove("cursor"));
+      S.cursor = null;
+      break;
+  }
+});
 
 /* ---------- bulk tools ---------- */
 const targets = () => S.vis.filter(r => r.sel && !r.rec.error);
@@ -819,12 +1071,17 @@ function wireBulk() {
   $("bdelete").onclick = async () => {
     const ts = targets();
     if (!ts.length) { status("Select some rows first.", ""); return; }
-    if (!confirm("Permanently delete " + ts.length + " file(s) from disk? This cannot be undone.")) return;
+    const edits = ts.filter(r => dirtyFields(r).length).length;
+    const warn = edits
+      ? "\n\nUnsaved tag edits on " + edits + " selected file(s) will be discarded."
+      : "";
+    if (!confirm("Permanently delete " + ts.length + " file(s) from disk? This cannot be undone." + warn)) return;
     setBusy(true);
     try {
       const res = await api("/api/delete", {items: ts.map(r => ({path: r.rec.path}))});
       const bad = res.results.filter(x => !x.ok).length;
-      await load();
+      // Rescan, but keep unsaved edits on the files that still exist.
+      await load({keepEdits: true});
       status("Deleted " + (ts.length - bad) + " file(s)." + (bad ? (" " + bad + " failed.") : ""), bad ? "bad" : "good");
     } catch (e) { status("Delete failed: " + (e.message || e), "bad"); }
     finally { setBusy(false); }
@@ -837,7 +1094,7 @@ function wireBulk() {
     try {
       const res = await api("/api/title-from-filename", {selected: ts.map(r => r.rec.path)});
       const bad = res.results.filter(x => !x.ok).length;
-      await load();
+      await load({keepEdits: true});
       status("Derived titles for " + (res.results.length - bad) + " file(s)." + (bad ? (" " + bad + " failed.") : ""), bad ? "bad" : "good");
     } catch (e) { status("Failed: " + (e.message || e), "bad"); }
     finally { setBusy(false); }
@@ -866,7 +1123,11 @@ function wireBulk() {
       if (!confirm("Rename " + res.items.length + " " + noun + "?\n\n" + preview + more)) return;
       const r2 = await api("/api/rename/apply", {items: res.items});
       const bad = r2.results.filter(x => !x.ok).length;
-      await load();
+      // After a rename the rows come back under their new paths; map edits
+      // and selection from each old path to its new one so they survive.
+      const aliases = {};
+      r2.results.forEach(x => { if (x.ok && x.dst) aliases[x.dst] = x.src; });
+      await load({keepEdits: true, aliases});
       status("Renamed " + (res.items.length - bad) + " file(s)." + (bad ? (" " + bad + " failed.") : ""), bad ? "bad" : "good");
     } catch (e) { status("Rename failed: " + (e.message || e), "bad"); }
     finally { setBusy(false); }
@@ -895,7 +1156,21 @@ async function refreshSettings() {
   try { applySettings(await api("/api/settings")); } catch (e) { /* ignore */ }
 }
 
-async function load() {
+async function load(opts) {
+  // keepEdits: carry unsaved edits/selection across a rescan, for rows whose
+  // files still exist. aliases maps a new path -> the old path it came from
+  // (used after a rename) so those edits survive too.
+  const keep = !!(opts && opts.keepEdits);
+  const aliases = (opts && opts.aliases) || {};
+  const prevEdits = new Map(), prevSel = new Set();
+  if (keep) {
+    for (const r of S.rows) {
+      const edits = {};
+      for (const f of FIELDS) if (isDirtyField(r, f)) edits[f] = r.cur[f];
+      if (Object.keys(edits).length) prevEdits.set(r.rec.path, edits);
+      if (r.sel) prevSel.add(r.rec.path);
+    }
+  }
   setBusy(true);
   status("Scanning...", "");
   try {
@@ -907,14 +1182,24 @@ async function load() {
     $("root").textContent = data.root;
     $("root").title = data.root;
     S.rows = data.rows.map(mkRow);
+    if (keep) {
+      for (const r of S.rows) {
+        const from = aliases[r.rec.path] || r.rec.path;
+        const edits = prevEdits.get(from);
+        if (edits) Object.assign(r.cur, edits);
+        if (prevSel.has(from) || prevSel.has(r.rec.path)) r.sel = true;
+      }
+    }
     S.last = null;
+    S.lastBook = null;
+    S.cursor = null;
     buildBooks();
     render();
     const errs = S.rows.filter(r => r.rec.error).length;
     const multi = S.books.filter(b => b.count > 1).length;
     const grouped = multi ? (" in " + S.books.length + " books (" + multi + " multi-file)") : "";
     status(S.rows.length + " audio files found" + grouped + (errs ? (", " + errs + " unreadable") : "") +
-           (S.readOnly ? " (read-only mode)." : ". Click a cell to edit; Enter moves down."), errs ? "bad" : "");
+           (S.readOnly ? " (read-only mode)." : ". Click a cell to edit; ↑/↓ move, X selects, Enter edits."), errs ? "bad" : "");
   } catch (e) {
     S.rows = []; buildBooks(); render();
     status(String(e.message || e), "bad");
@@ -996,12 +1281,12 @@ $("s_template").placeholder = DEFAULT_TEMPLATE;
 $("groupbooks").checked = S.view === "books";
 $("groupbooks").onchange = (e) => {
   S.view = e.target.checked ? "books" : "files";
-  S.last = null; S.lastBook = null;
+  S.last = null; S.lastBook = null; S.cursor = null;
   try { localStorage.setItem("abtagger-view", S.view); } catch (err) { /* ignore */ }
   render();
   status(S.view === "books"
-    ? "Book view: Title is the book title. Expand a row to edit per-file track titles."
-    : "File view: one row per audio file. Title is that file's track title.", "");
+    ? "Book view: one row per book. Title is the book title. Expand a multi-file book to edit per-file track titles."
+    : "File view: one row per audio file. Title is the book title (ABS Title); expand a book in Book view to edit track titles.", "");
 };
 $("settings").onclick = async () => {
   $("modal").style.display = "flex";
@@ -1013,6 +1298,8 @@ $("s_default").onclick = () => {
 };
 $("help").onclick = () => { $("helpmodal").style.display = "flex"; };
 $("h_close").onclick = () => { $("helpmodal").style.display = "none"; };
+$("coverclose").onclick = hideCover;
+$("covermodal").addEventListener("click", (e) => { if (e.target === $("covermodal")) hideCover(); });
 $("s_cancel").onclick = () => { $("modal").style.display = "none"; };
 $("s_save").onclick = async () => {
   setBusy(true);
@@ -1034,7 +1321,7 @@ $("s_save").onclick = async () => {
 let ft = null;
 $("filter").addEventListener("input", (e) => {
   clearTimeout(ft);
-  ft = setTimeout(() => { S.filter = e.target.value; S.last = null; S.lastBook = null; render(); }, 120);
+  ft = setTimeout(() => { S.filter = e.target.value; S.last = null; S.lastBook = null; S.cursor = null; render(); }, 120);
 });
 $("save").onclick = save;
 $("undo").onclick = undo;

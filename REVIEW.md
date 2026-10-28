@@ -55,14 +55,15 @@
    for tens of thousands, and it blocks saves while running. Virtualise/paginate
    the grid and consider an incremental scan or a background rescan before scaling.
 
-8. **Book view is a grouping heuristic, not an identity.** `books.py` groups by
-   album+author first, then filename part markers, then title, and folds `CD1` /
-   `Disc 2` folders into their parent. That handles the common multi-part layouts,
-   but a flat folder with missing tags, or two editions of the same book, can still
-   be grouped wrongly or split. The UI mitigates this by showing a file count and
-   expandable per-file rows. Selection, undo, and writes remain file-based: a book
-   row is only a view over one or more file rows, and book-row edits fan out to
-   every file in the group.
+8. **Book identity is the filesystem, matching Audiobookshelf.** `books.py`
+   groups by folder: a folder containing audio files is one book, a loose audio
+   file in the library root is its own book, and `CD1` / `Disc 2` subfolders fold
+   into their parent. Tags are metadata, not identity, so a bad `album` can never
+   merge unrelated books. This deliberately gives up tag-based grouping; a folder
+   holding several standalone books becomes one book in both ABS and Abtagger until
+   it is reorganized. The UI shows a file count and expandable per-file rows.
+   Selection, undo, and writes remain file-based: a book row is only a view over
+   one or more file rows, and book-row edits fan out to every file in the group.
 
 9. **Filesystem operations are not transactional.** A rename/move pass that fails
    halfway leaves a partial layout. Any future "layout to ABS-recommended structure"
@@ -73,7 +74,10 @@
     sidecar JSON; this tool owns the audio files. Integration should be an adapter
     that (a) triggers an ABS library scan/rescan after our changes and (b) optionally
     pushes metadata through ABS's REST API. Do not write into ABS's database or
-    sidecar files directly.
+    sidecar files directly. Note that the scan/delete endpoints return `200 OK` with
+    a plain-text body (`OK`), not JSON; the client tolerates that for those calls.
+    The running server re-reads ABS config on settings save, scan, and scan/clean
+    actions, so config changes do not require a restart.
 
 11. **Metadata fetch is the riskiest feature.** Matching by title/author is fuzzy
     and wrong matches corrupt tags. It needs a preview/diff screen, per-field
@@ -99,9 +103,9 @@
     keeping the undo log's old values as a logical backup.
 
 15. **ABS reads `album` as its Title, and `title` as the per-file track title.**
-    The grid has one Title column: book rows read/write album, while expanded
-    file rows and File view read/write title. Do not "simplify" this by removing
-    album:
+    The grid has one Title column: book rows and File-view rows read/write album,
+    while expanded file rows of a multi-file book read/write title. Do not
+    "simplify" this by removing album:
     in a multi-file book, album is the book title while each file's title is its
     chapter/track name. Subtitle is a separate tag (`TIT3` / `©st3`), not an alias
     for album. The embed convention of `album = Title: Subtitle` used by some tools
@@ -111,7 +115,9 @@
     lives in the custom `@sti` atom (which can include "(Unabridged)" and the
     subtitle) and the subtitle in `----:com.pilabor.tone:SUBTITLE`. `@sti` is only
     used when it extends the album (one known file has a URL in that atom), and
-    writes update `@sti`/Tone only when those atoms already exist.
+    writes update `@sti`/Tone only when those atoms already exist. Audible also
+    uses `SRNM`/`SRSQ` for series/sequence; those are read as fallbacks and kept
+    in sync when they exist.
 
 ## Architectural recommendations (foundations)
 

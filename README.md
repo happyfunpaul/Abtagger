@@ -28,10 +28,15 @@ Then open the URL it prints (it contains a random access token).
 - Bulk operations: set a field on selected rows, find/replace (literal or regex),
   copy one field into another, revert selected/all.
 - Per-file and bulk editing, with validation and dirty-cell highlighting.
-- Book-level grouping view: one row per book, even for a multi-file audiobook.
-  A file-count badge marks multi-file books; book-row edits apply to every file,
-  and fields whose files differ show `— mixed —`. Expand the row to edit the
-  individual files (for example, per-chapter titles).
+- Cover art preview: the Cover column shows whether art is embedded; click **yes** to view it.
+- Keyboard navigation: **↑/↓** move the row cursor, **X**/**Space** select, **Enter** edit, **←/→** collapse/expand a book, **Ctrl+S** save.
+- Book-level grouping view: one row per book, using the same identity rule as
+  Audiobookshelf — **a book is a folder**. A folder holding several audio files is
+  one book; an audio file loose in the library root is its own book; `CD1` /
+  `Disc 2` subfolders fold into their parent. A file-count badge marks multi-file
+  books; book-row edits apply to every file, and fields whose files differ show
+  `— mixed —`. Expand the row to edit the individual files (for example,
+  per-chapter titles).
 - Optimistic concurrency: refuses to overwrite a file that changed on disk since load.
 - Undo the last save (value-based).
 - Rename/move files to a configurable template (with conditional folders).
@@ -54,8 +59,8 @@ model:
 | track title | `©nam`                                 | `TIT2`                 |
 | author      | `©ART` (+ `aART` if empty/equal)       | `TPE1`                 |
 | narrator    | `©wrt` (composer)                      | `TCOM`                 |
-| series      | iTunes `SERIES` + `©mvn`               | `TXXX:SERIES` + `MVNM` |
-| series_num  | iTunes `SERIES-PART` (+ `©mvi` if int) | `TXXX:SERIES-PART` + `MVIN` |
+| series      | iTunes `SERIES` + `©mvn` (+ Audible `SRNM`) | `TXXX:SERIES` + `MVNM` |
+| series_num  | iTunes `SERIES-PART` (+ `©mvi` if int; Audible `SRSQ`) | `TXXX:SERIES-PART` + `MVIN` |
 | year        | `©day`                                 | `TDRC`                 |
 | genre       | `©gen`                                 | `TCON`                 |
 
@@ -70,10 +75,16 @@ atoms. Abtagger reads those as fallbacks, so the grid shows the same Title and
 Subtitle values that ABS shows for those files. Writes update the standard
 atoms and any existing Audible/Tone atoms.
 
-There is one **Title** column. In Book view it shows the book title; when a
-multi-file book is expanded, its child rows show each file's track title in that
-same column. File view shows track titles for every file. This keeps the
-book-level view free of a field that ABS does not expose as book metadata.
+There is one **Title** column. Book rows and File-view rows show the book title
+(the value ABS displays). When a multi-file book is expanded, its child rows show
+each file's track title in that same column. This keeps the book title visible
+and editable everywhere without adding a second title column, while still allowing
+per-chapter/per-part titles to be edited. The underlying storage remains the
+`album` tag; the UI never calls it an album.
+
+Book identity is **not** derived from `album` or `title`; it comes from the
+filesystem. Fixing a book title therefore changes what ABS displays, but it can
+never merge or split books in Abtagger. Use folders to change book identity.
 
 ## Safety
 
@@ -110,12 +121,17 @@ Wrap optional parts in `[ ]`: a bracket is emitted only if every placeholder ins
 it is non-empty. Example:
 
 ```
-{author_last}, {author_first}/[{series}/][{series_num} - ]{title}
+{author_last}, {author_first}/[{series}/][{series_num} - ]{title}/{title}
 ```
 
-- A standalone book (no series) becomes `James, Aaron/Assholes.m4b`.
-- A series book becomes `James, Aaron/Stormlight Archive/1 - The Way of Kings.m4b`.
-- Add a trailing `/{title}` to get one folder per book.
+- A standalone book (no series) becomes
+  `James, Aaron/Assholes/Assholes.m4b`.
+- A series book becomes
+  `Sanderson, Brandon/Stormlight Archive/1 - The Way of Kings/The Way of Kings.m4b`.
+- The trailing `/{title}` is what gives ABS its book identity: one folder per
+  book. Multi-file books (chapters, discs, split M4Bs) must share that folder.
+  Loose files in the library root are still valid single-file books, but keeping
+  everything in folders is the only layout where ABS and Abtagger always agree.
 
 Use `/` to create folders. Illegal filename characters are sanitized. The template is
 saved in Settings so you are not prompted every time (Shift+click "Rename selected"
@@ -124,7 +140,10 @@ field or pressing "Use default" in Settings restores it.
 
 ## Audiobookshelf integration
 
-Optional. Configure via Settings or CLI/env. Then use:
+Optional. Configure via Settings, CLI/env, or `~/.abtagger/config.json`. Settings
+are picked up immediately on Save/Reload — no restart needed. With exactly one ABS
+library the library id is auto-detected, so Docker path differences such as
+`/audiobooks` vs a host path like `D:\Library` are fine. Then use:
 - **Scan ABS** — trigger a library scan for this folder.
 - **Clean missing (ABS)** — remove ABS items flagged missing for this folder.
 
@@ -140,8 +159,9 @@ Stored in `~/.abtagger/config.json` (ABS URL/token/library, rename template).
 python -m unittest discover -s tests
 ```
 
-44 tests covering validation, path safety, tag round-trips, rename templates,
-de-duplication, and book grouping.
+36 test methods (many table-driven) covering validation, path safety, tag
+round-trips, rename templates, de-duplication, cover extraction, book grouping,
+ABS config refresh, single-library detection, and ABS response handling.
 
 ## Roadmap
 

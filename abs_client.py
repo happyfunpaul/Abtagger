@@ -32,7 +32,8 @@ class AbsClient:
     def __init__(self, cfg: AbsConfig):
         self.cfg = cfg
 
-    def _request(self, method: str, path: str, body: Any = None) -> Any:
+    def _request(self, method: str, path: str, body: Any = None, *,
+                 expect_json: bool = True) -> Any:
         if not self.cfg.url or not self.cfg.token:
             raise RuntimeError("ABS not configured (set abs_url/abs_token in ~/.abtagger/config.json or env)")
         url = self.cfg.url.rstrip("/") + path
@@ -44,29 +45,53 @@ class AbsClient:
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 raw = resp.read()
-                return json.loads(raw) if raw else {}
+                ctype = resp.headers.get("Content-Type", "")
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"ABS HTTP {e.code}: {e.read().decode('utf-8', 'replace')}") from e
+        if not raw:
+            return {}
+        if not expect_json:
+            # ABS's scan/delete endpoints return 200 with text/plain "OK" (or an
+            # empty body), not JSON.
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return {"ok": True, "body": raw.decode("utf-8", "replace").strip()}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"ABS returned non-JSON from {method} {path} ({ctype}): {raw[:200]!r}"
+            ) from e
 
     def get_libraries(self) -> list[dict[str, Any]]:
         data = self._request("GET", "/api/libraries")
         return data.get("libraries", [])
 
     def find_library_for_root(self, root: Path) -> str | None:
-        """Best-effort: match our root to an ABS library folder path."""
+        """Best-effort: match our root to an ABS library folder path.
+
+        If ABS runs in Docker, its folder path (``/audiobooks``) will not match
+        the host path (``M:\\Audiobooks``). When there is exactly one library,
+        using it is unambiguous, so fall back to it instead of forcing the user
+        to copy the library id into config.
+        """
         root_s = str(root).replace("\\", "/").rstrip("/")
-        for lib in self.get_libraries():
+        libs = self.get_libraries()
+        for lib in libs:
             for folder in lib.get("folders", []):
                 fp = str(folder.get("fullPath", "")).replace("\\", "/").rstrip("/")
                 if fp and (root_s == fp or root_s.startswith(fp + "/")):
-                    return lib["id"]
+                    return lib.get("id")
+        if len(libs) == 1:
+            return libs[0].get("id")
         return None
 
     def scan_library(self, library_id: str) -> dict[str, Any]:
-        return self._request("POST", f"/api/libraries/{library_id}/scan")
+        return self._request("POST", f"/api/libraries/{library_id}/scan", expect_json=False)
 
     def scan_item(self, item_id: str) -> dict[str, Any]:
-        return self._request("POST", f"/api/items/{item_id}/scan")
+        return self._request("POST", f"/api/items/{item_id}/scan", expect_json=False)
 
     def get_library_items(self, library_id: str, limit: int = 0) -> list[dict[str, Any]]:
         data = self._request("GET", f"/api/libraries/{library_id}/items?limit={limit}")
@@ -86,7 +111,7 @@ class AbsClient:
         for it in self.get_library_items(library_id):
             if it.get("isMissing"):
                 try:
-                    self._request("DELETE", f"/api/items/{it['id']}")
+                    self._request("DELETE", f"/api/items/{it['id']}", expect_json=False)
                     removed += 1
                 except Exception:
                     pass
